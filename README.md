@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # The Physics Bench
 
 A small React + TypeScript + Vite site for physics simulations, styled as a
@@ -58,3 +59,7 @@ src/
     circular-motion/   first simulation, self-contained
   styles/          global.css — all color tokens live here (oak + walnut)
 ```
+=======
+# Physcis-Simulation-Engine
+This is a small phycis simulation engine made for high school physcis to make the uderstanding of real world phenomenon more comprehensive
+>>>>>>> 494748a7fd498a5aa4d9204656d759120a6fb9d9
