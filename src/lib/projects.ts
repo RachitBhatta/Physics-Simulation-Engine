@@ -23,13 +23,5 @@ export const projects: ProjectMeta[] = [
     tags: ['Kinematics', 'SHM'],
     status: 'ready',
   },
-  {
-    id: 'placeholder-2',
-    number: '02',
-    title: 'Next Experiment',
-    subtitle: 'Reserved slot',
-    description: 'A new plate for whatever you build next.',
-    tags: ['TBD'],
-    status: 'coming-soon',
-  },
+  
 ]
