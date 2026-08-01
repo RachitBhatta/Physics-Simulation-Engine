@@ -1,0 +1,97 @@
+.plate {
+  position: relative;
+  text-align: left;
+  background: var(--plate);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-plate);
+  padding: 28px 24px 22px;
+  cursor: pointer;
+  box-shadow: 0 6px 16px var(--shadow), inset 0 0 0 1px rgba(255,255,255,0.03);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  font-family: var(--font-body);
+  color: var(--text);
+  min-height: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plate:not(.plate--locked):hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 22px var(--shadow), inset 0 0 0 1px rgba(255,255,255,0.05);
+}
+
+.plate--locked {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plate__screw {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, var(--brass-bright), var(--brass) 70%);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+.plate__screw--tl { top: 10px; left: 10px; }
+.plate__screw--tr { top: 10px; right: 10px; }
+.plate__screw--bl { bottom: 10px; left: 10px; }
+.plate__screw--br { bottom: 10px; right: 10px; }
+
+.plate__number {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--brass);
+  letter-spacing: 0.1em;
+}
+
+.plate__title {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.plate__subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.plate__desc {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.85;
+  flex: 1;
+}
+
+.plate__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.plate__tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.plate__status {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--rust);
+}
