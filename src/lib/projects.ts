@@ -24,12 +24,34 @@ export const projects: ProjectMeta[] = [
     status: 'ready',
   },
   {
-    id: 'placeholder-2',
+    id: 'water-ripple',
     number: '02',
-    title: 'Next Experiment',
-    subtitle: 'Reserved slot',
-    description: 'A new plate for whatever you build next.',
-    tags: ['TBD'],
-    status: 'coming-soon',
+    title: 'Water Droplet Ripple',
+    subtitle: 'Top-down 2D wave equation',
+    description:
+      'Drop water onto a still pond and watch the disturbance spread as an expanding circular ring, rendered with real-time normal-mapped lighting for a pseudo-3D water surface.',
+    tags: ['Waves', 'Fluids'],
+    status: 'ready',
+  },
+  {
+    id: 'string-wave',
+    number: '03',
+    title: 'Wave on a String',
+    subtitle: 'Transverse wave, pluck or drive',
+    description:
+      'Pluck a string by hand or drive it continuously from one end. Tune the drive frequency against a fixed boundary to lock in a standing wave with visible nodes and antinodes.',
+    tags: ['Waves', 'Transverse'],
+    status: 'ready',
+  },
+  {
+    id: 'longitudinal-wave',
+    number: '04',
+    title: 'Longitudinal Wave',
+    subtitle: 'Ball-spring chain, compression/rarefaction',
+    description:
+      'A chain of beads coupled by springs, oscillating parallel to the direction of travel. Watch compression and rarefaction bands move down the chain — the same mechanism behind sound.',
+    tags: ['Waves', 'Sound'],
+    status: 'ready',
   },
 ]
+
