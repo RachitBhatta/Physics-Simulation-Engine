@@ -23,6 +23,7 @@ export const projects: ProjectMeta[] = [
     tags: ['Kinematics', 'SHM'],
     status: 'ready',
   },
+<<<<<<< HEAD
   {
     id: 'water-ripple',
     number: '02',
@@ -53,5 +54,6 @@ export const projects: ProjectMeta[] = [
     tags: ['Waves', 'Sound'],
     status: 'ready',
   },
+
 ]
 
