@@ -23,7 +23,7 @@ export const projects: ProjectMeta[] = [
     tags: ['Kinematics', 'SHM'],
     status: 'ready',
   },
-<<<<<<< HEAD
+
   {
     id: 'water-ripple',
     number: '02',
