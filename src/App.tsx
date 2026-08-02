@@ -4,6 +4,7 @@ import CircularMotionSim from './projects/circular-motion/CircularMotionSim'
 import WaterRippleSim from './projects/water-ripple/WaterRippleSim'
 import StringWaveSim from './projects/string-wave/StringWaveSim'
 import LongitudinalWaveSim from './projects/longitudinal-wave/LongitudinalWaveSim'
+import PendulumSim from './projects/simple-pendulum/PendulumSim'
 import { useTheme } from './lib/useTheme'
 
 type Route = { name: 'home' } | { name: 'project'; id: string }
@@ -24,6 +25,9 @@ export default function App() {
   }
   if (route.name === 'project' && route.id === 'longitudinal-wave') {
     return <LongitudinalWaveSim theme={theme} onBack={onBack} />
+  }
+  if (route.name === 'project' && route.id === 'simple-pendulum') {
+    return <PendulumSim theme={theme} onBack={onBack} />
   }
 
   return (

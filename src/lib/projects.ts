@@ -23,7 +23,6 @@ export const projects: ProjectMeta[] = [
     tags: ['Kinematics', 'SHM'],
     status: 'ready',
   },
-
   {
     id: 'water-ripple',
     number: '02',
@@ -48,12 +47,21 @@ export const projects: ProjectMeta[] = [
     id: 'longitudinal-wave',
     number: '04',
     title: 'Longitudinal Wave',
-    subtitle: 'Ball-spring chain, compression/rarefaction',
+    subtitle: 'Speaker driving a field of molecules',
     description:
-      'A chain of beads coupled by springs, oscillating parallel to the direction of travel. Watch compression and rarefaction bands move down the chain — the same mechanism behind sound.',
+      'Click the speaker cone to set it vibrating. Watch compression and rarefaction bands ripple through a field of air molecules — the same mechanism behind sound, with intensity and molecule density under your control.',
     tags: ['Waves', 'Sound'],
     status: 'ready',
   },
-
+  {
+    id: 'simple-pendulum',
+    number: '05',
+    title: 'Simple Pendulum',
+    subtitle: 'Length, gravity, friction, live vectors',
+    description:
+      'Drag the bob to set a starting angle and release it. Live velocity and acceleration vectors reveal exactly why both peak in different places — and how far real motion drifts from small-angle SHM.',
+    tags: ['Oscillations', 'SHM'],
+    status: 'ready',
+  },
 ]
 

@@ -59,31 +59,18 @@
   padding: 14px;
 }
 
-.sim__panel--string {
-  height: 320px;
-  position: relative;
-}
-
-.sim__overlay {
-  position: absolute;
-  top: 10px;
-  z-index: 2;
-}
-
-.sim__overlay--left {
-  left: 10px;
-}
-
-.sim__overlay--right {
-  right: 10px;
+.sim__panel--pendulum {
+  height: 420px;
 }
 
 .sim__canvas {
   width: 100%;
   height: 100%;
   display: block;
-  cursor: pointer;
-  touch-action: none;
+}
+
+.sim__canvas--drag {
+  cursor: grab;
 }
 
 .sim__panel--wave {
@@ -99,8 +86,7 @@
 }
 
 .sim__canvas--wave {
-  height: 160px;
-  cursor: default;
+  height: 140px;
 }
 
 .sim__controls {

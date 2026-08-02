@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import Dial from '../../components/Dial'
-import Switch from '../../components/Switch'
+import RadioGroup from '../../components/RadioGroup'
+import Checkbox from '../../components/Checkbox'
 import type { Theme } from '../../lib/useTheme'
-// @ts-ignore: CSS import type declarations are not available in this project setup.
 import './WaterRippleSim.css'
 
 interface Props {
@@ -17,12 +17,17 @@ interface Colors {
   waterR: number
   waterG: number
   waterB: number
+  air: string
+  brass: string
 }
 
-// Grid resolution for the height-field. Kept modest (110x110 = 12.1k cells)
-// because every cell is touched twice per frame: once for the physics
-// update, once for the per-pixel lighting pass.
+type ViewMode = 'top' | 'side'
+type Speed = 'normal' | 'slow'
+
+// Grid resolution for the height-field.
 const GRID = 110
+const FAUCET_GX = 10
+const FAUCET_GY = Math.floor(GRID / 2)
 
 export default function WaterRippleSim({ theme, onBack }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -31,54 +36,58 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const colorsRef = useRef<Colors | null>(null)
   const rafRef = useRef<number>(0)
 
-  // Two height buffers (current + previous step) implement the discrete
-  // 2D wave equation. A third scratch buffer holds the "next" frame while
-  // it's being computed, then buffers are rotated.
   const curRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const prevRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const nextRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
 
-  const lastDropRowRef = useRef(Math.floor(GRID / 2))
   const autoTimerRef = useRef(0)
+  const frameSkipRef = useRef(0)
+  const timeRef = useRef(0)
+  const historyRef = useRef<{ t: number; h: number }[]>([])
 
   const [damping, setDamping] = useState(0.992)
-  const [dropletRadius, setDropletRadius] = useState(4)
-  const [dropletStrength, setDropletStrength] = useState(2.2)
-  const [autoDrip, setAutoDrip] = useState(false)
-  const [dripInterval, setDripInterval] = useState(1.2)
-  const [showProfile, setShowProfile] = useState(true)
+  const [faucetOn, setFaucetOn] = useState(true)
+  const [faucetFreq, setFaucetFreq] = useState(0.8)
+  const [faucetAmp, setFaucetAmp] = useState(2.2)
+  const [dropletRadius] = useState(4)
+  const [viewMode, setViewMode] = useState<ViewMode>('top')
+  const [speed, setSpeed] = useState<Speed>('normal')
+  const [showGraph, setShowGraph] = useState(true)
+  const [showScale, setShowScale] = useState(true)
 
   const dampingRef = useRef(damping)
+  const faucetOnRef = useRef(faucetOn)
+  const faucetFreqRef = useRef(faucetFreq)
+  const faucetAmpRef = useRef(faucetAmp)
   const dropletRadiusRef = useRef(dropletRadius)
-  const dropletStrengthRef = useRef(dropletStrength)
-  const autoDripRef = useRef(autoDrip)
-  const dripIntervalRef = useRef(dripInterval)
-  const showProfileRef = useRef(showProfile)
+  const viewModeRef = useRef(viewMode)
+  const speedRef = useRef(speed)
 
   useEffect(() => {
     dampingRef.current = damping
   }, [damping])
   useEffect(() => {
+    faucetOnRef.current = faucetOn
+  }, [faucetOn])
+  useEffect(() => {
+    faucetFreqRef.current = faucetFreq
+  }, [faucetFreq])
+  useEffect(() => {
+    faucetAmpRef.current = faucetAmp
+  }, [faucetAmp])
+  useEffect(() => {
     dropletRadiusRef.current = dropletRadius
   }, [dropletRadius])
   useEffect(() => {
-    dropletStrengthRef.current = dropletStrength
-  }, [dropletStrength])
+    viewModeRef.current = viewMode
+  }, [viewMode])
   useEffect(() => {
-    autoDripRef.current = autoDrip
-  }, [autoDrip])
-  useEffect(() => {
-    dripIntervalRef.current = dripInterval
-  }, [dripInterval])
-  useEffect(() => {
-    showProfileRef.current = showProfile
-  }, [showProfile])
+    speedRef.current = speed
+  }, [speed])
 
   useEffect(() => {
     const s = getComputedStyle(document.documentElement)
     const get = (name: string) => s.getPropertyValue(name).trim()
-    // Parse the theme's teal accent into RGB so the water tint stays
-    // consistent with the rest of the cabinet, independent of oak/walnut.
     const teal = get('--teal') || '#2f6f62'
     const rgb = hexToRgb(teal) ?? { r: 47, g: 111, b: 98 }
     colorsRef.current = {
@@ -88,24 +97,19 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       waterR: rgb.r,
       waterG: rgb.g,
       waterB: rgb.b,
+      air: get('--panel'),
+      brass: get('--brass'),
     }
   }, [theme])
 
-  // Add a Gaussian-shaped depression to the height field, centered at grid
-  // cell (gx, gy). Physically this models the momentary displacement a
-  // falling droplet causes on impact; the wave equation then propagates
-  // that disturbance outward as a ring — exactly what you see when a drop
-  // hits still water viewed from above.
-  const addDroplet = (gx: number, gy: number) => {
+  const addDroplet = (gx: number, gy: number, strength: number, radius: number) => {
     const cur = curRef.current
     const prev = prevRef.current
-    const r = dropletRadiusRef.current
-    const strength = dropletStrengthRef.current
-    const r2 = r * r
-    const minX = Math.max(1, Math.floor(gx - r))
-    const maxX = Math.min(GRID - 2, Math.ceil(gx + r))
-    const minY = Math.max(1, Math.floor(gy - r))
-    const maxY = Math.min(GRID - 2, Math.ceil(gy + r))
+    const r2 = radius * radius
+    const minX = Math.max(1, Math.floor(gx - radius))
+    const maxX = Math.min(GRID - 2, Math.ceil(gx + radius))
+    const minY = Math.max(1, Math.floor(gy - radius))
+    const maxY = Math.min(GRID - 2, Math.ceil(gy + radius))
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {
         const dx = x - gx
@@ -117,13 +121,14 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
         prev[y * GRID + x] -= bump
       }
     }
-    lastDropRowRef.current = Math.round(gy)
   }
 
   const reset = () => {
     curRef.current.fill(0)
     prevRef.current.fill(0)
     nextRef.current.fill(0)
+    historyRef.current = []
+    timeRef.current = 0
   }
 
   useEffect(() => {
@@ -150,10 +155,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
     }
     window.addEventListener('resize', handleResize)
 
-    // Offscreen low-res canvas: we render one pixel per grid cell here,
-    // then let the browser upscale it with smoothing onto the visible
-    // canvas. This is far cheaper than shading at display resolution and
-    // gives a naturally soft, water-like blur for free.
     const offscreen = document.createElement('canvas')
     offscreen.width = GRID
     offscreen.height = GRID
@@ -161,11 +162,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
     const offCtx = offscreen.getContext('2d')!
     const imgData = offCtx.createImageData(GRID, GRID)
 
-    // Seed a droplet in the center so the pond isn't dead on load.
-    addDroplet(GRID / 2, GRID / 2)
-
-    // Fixed light direction (from upper-left, like sunlight on a pond),
-    // used for Lambertian shading of the height field's surface normal.
     const lightDir = normalize3(0.45, -0.55, 0.7)
 
     const physicsStep = () => {
@@ -179,27 +175,17 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
         const rowUp = row - GRID
         const rowDown = row + GRID
         for (let x = 1; x < GRID - 1; x++) {
-          // Discrete 2D wave equation (the classic "ripple tank" update):
-          // each cell's next height is driven toward the average of its
-          // four neighbors, minus its own height one step ago. This is
-          // equivalent to a finite-difference solution of
-          //   d^2z/dt^2 = c^2 * (d^2z/dx^2 + d^2z/dy^2)
-          // with c and dt folded into the coefficients, then damped so
-          // energy dissipates instead of ringing forever.
           const neighborSum =
             cur[rowUp + x] + cur[rowDown + x] + cur[row + x - 1] + cur[row + x + 1]
-          const h = (neighborSum / 2 - prev[row + x]) * damp
-          next[row + x] = h
+          next[row + x] = ((neighborSum / 2) - prev[row + x]) * damp
         }
       }
-      // Rotate buffers: prev <- cur, cur <- next (reuse old prev array as
-      // the new scratch buffer to avoid allocating every frame).
       prevRef.current = cur
       curRef.current = next
       nextRef.current = prev
     }
 
-    const renderWater = () => {
+    const renderTop = () => {
       const colors = colorsRef.current
       if (!colors) return
       const cur = curRef.current
@@ -209,9 +195,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       for (let y = 0; y < GRID; y++) {
         for (let x = 0; x < GRID; x++) {
           const i = y * GRID + x
-          // Surface normal from the height field's local slope (central
-          // difference). Clamped indices avoid reading out of bounds at
-          // the pond's edge.
           const xL = x > 0 ? i - 1 : i
           const xR = x < GRID - 1 ? i + 1 : i
           const yU = y > 0 ? i - GRID : i
@@ -221,8 +204,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           const n = normalize3(-dHdx, -dHdy, 1)
 
           const diffuse = Math.max(0, n.x * lightDir.x + n.y * lightDir.y + n.z * lightDir.z)
-          // Blinn-Phong-style specular highlight so wave crests catch a
-          // bright glint, the way real water does.
           const halfZ = (lightDir.z + 1) / Math.hypot(lightDir.x, lightDir.y, lightDir.z + 1)
           const specular = Math.pow(Math.max(0, n.z * halfZ), 28)
 
@@ -239,20 +220,130 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       main.ctx.imageSmoothingEnabled = true
       main.ctx.clearRect(0, 0, main.w, main.h)
       main.ctx.drawImage(offscreen, 0, 0, GRID, GRID, 0, 0, main.w, main.h)
-
-      // Thin frame so the pond reads as a contained vessel, not a void.
       main.ctx.strokeStyle = colors.axis
       main.ctx.lineWidth = 1
       main.ctx.strokeRect(0.5, 0.5, main.w - 1, main.h - 1)
+
+      drawFaucet(main.ctx, (FAUCET_GX / GRID) * main.w, (FAUCET_GY / GRID) * main.h, colors, true)
+
+      if (showScale) {
+        drawScaleBar(main.ctx, main.w, main.h, colors)
+      }
     }
 
-    const renderProfile = () => {
+    const renderSide = () => {
       const colors = colorsRef.current
-      if (!colors || !showProfileRef.current) {
+      if (!colors) return
+      const cur = curRef.current
+      const { ctx, w, h } = main
+      ctx.clearRect(0, 0, w, h)
+
+      const baseline = h * 0.45
+      const scale = h * 3.2
+
+      // air above the waterline
+      ctx.fillStyle = colors.air
+      ctx.fillRect(0, 0, w, baseline)
+
+      // water body: filled polygon following the height profile through
+      // the faucet's row, exactly like a real side-on cross-section.
+      ctx.beginPath()
+      ctx.moveTo(0, baseline - cur[FAUCET_GY * GRID] * scale)
+      for (let x = 0; x < GRID; x++) {
+        const px = (x / (GRID - 1)) * w
+        const py = baseline - cur[FAUCET_GY * GRID + x] * scale
+        ctx.lineTo(px, py)
+      }
+      ctx.lineTo(w, h)
+      ctx.lineTo(0, h)
+      ctx.closePath()
+      ctx.fillStyle = `rgb(${colors.waterR}, ${colors.waterG}, ${colors.waterB})`
+      ctx.fill()
+
+      // bright surface line to sell the "water line" read
+      ctx.strokeStyle = 'rgba(255,255,255,0.5)'
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      for (let x = 0; x < GRID; x++) {
+        const px = (x / (GRID - 1)) * w
+        const py = baseline - cur[FAUCET_GY * GRID + x] * scale
+        if (x === 0) ctx.moveTo(px, py)
+        else ctx.lineTo(px, py)
+      }
+      ctx.stroke()
+
+      ctx.strokeStyle = colors.axis
+      ctx.globalAlpha = 0.4
+      ctx.setLineDash([4, 5])
+      ctx.beginPath()
+      ctx.moveTo(0, baseline)
+      ctx.lineTo(w, baseline)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.globalAlpha = 1
+      ctx.strokeRect(0.5, 0.5, w - 1, h - 1)
+
+      drawFaucet(ctx, (FAUCET_GX / GRID) * w, baseline - cur[FAUCET_GY * GRID + FAUCET_GX] * scale, colors, false)
+
+      if (showScale) {
+        drawScaleBar(ctx, w, h, colors)
+      }
+    }
+
+    const drawFaucet = (
+      ctx: CanvasRenderingContext2D,
+      px: number,
+      py: number,
+      colors: Colors,
+      topView: boolean,
+    ) => {
+      ctx.save()
+      ctx.translate(px, py)
+      // pipe entering from the left edge
+      ctx.strokeStyle = colors.brass
+      ctx.lineWidth = 6
+      ctx.beginPath()
+      ctx.moveTo(-40, 0)
+      ctx.lineTo(-6, 0)
+      ctx.stroke()
+      // valve knob — glows when the faucet is actively driving
+      ctx.beginPath()
+      ctx.arc(-6, 0, 6, 0, Math.PI * 2)
+      ctx.fillStyle = faucetOnRef.current ? '#ffd27a' : colors.brass
+      ctx.fill()
+      if (!topView) {
+        ctx.strokeStyle = colors.axis
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+
+    const drawScaleBar = (ctx: CanvasRenderingContext2D, w: number, h: number, colors: Colors) => {
+      const barW = w * 0.15
+      const x0 = w - barW - 14
+      const y0 = h - 16
+      ctx.strokeStyle = colors.text
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(x0, y0)
+      ctx.lineTo(x0 + barW, y0)
+      ctx.moveTo(x0, y0 - 4)
+      ctx.lineTo(x0, y0 + 4)
+      ctx.moveTo(x0 + barW, y0 - 4)
+      ctx.lineTo(x0 + barW, y0 + 4)
+      ctx.stroke()
+      ctx.font = '10px var(--font-mono, monospace)'
+      ctx.fillStyle = colors.text
+      ctx.fillText('scale', x0, y0 - 8)
+    }
+
+    const renderGraph = () => {
+      const colors = colorsRef.current
+      if (!colors || !showGraph) {
         profile.ctx.clearRect(0, 0, profile.w, profile.h)
         return
       }
-      const cur = curRef.current
       const { ctx, w, h } = profile
       const midY = h / 2
       ctx.clearRect(0, 0, w, h)
@@ -265,20 +356,27 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       ctx.stroke()
       ctx.globalAlpha = 1
 
-      // Plot the height field along the row of the most recent drop —
-      // a 1D cross-section through the 2D ripple, so you can directly
-      // see the wave profile (crest/trough spacing) that the top-down
-      // view only shows as light and shadow.
-      const row = lastDropRowRef.current
-      const scale = h * 6
+      const hist = historyRef.current
+      if (hist.length < 2) return
+      const tNow = hist[hist.length - 1].t
+      const WINDOW = 6
+      const tMin = tNow - WINDOW
+      const scale = Math.min(1, (h / 2 - 8) / 6)
+
       ctx.strokeStyle = colors.text
       ctx.lineWidth = 2
       ctx.beginPath()
-      for (let x = 0; x < GRID; x++) {
-        const px = (x / (GRID - 1)) * w
-        const py = midY - cur[row * GRID + x] * scale
-        if (x === 0) ctx.moveTo(px, py)
-        else ctx.lineTo(px, py)
+      let started = false
+      for (const p of hist) {
+        if (p.t < tMin) continue
+        const px = ((p.t - tMin) / WINDOW) * w
+        const py = midY - p.h * scale
+        if (!started) {
+          ctx.moveTo(px, py)
+          started = true
+        } else {
+          ctx.lineTo(px, py)
+        }
       }
       ctx.stroke()
     }
@@ -289,30 +387,44 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const dt = (ts - lastTs) / 1000
       lastTs = ts
 
-      if (autoDripRef.current) {
-        autoTimerRef.current += dt
-        if (autoTimerRef.current >= dripIntervalRef.current) {
-          autoTimerRef.current = 0
-          const gx = 8 + Math.random() * (GRID - 16)
-          const gy = 8 + Math.random() * (GRID - 16)
-          addDroplet(gx, gy)
+      // "Slow" runs physics on every 3rd frame instead of scaling dt,
+      // since the grid update is a discrete iteration, not a
+      // continuous integrator.
+      frameSkipRef.current++
+      const shouldStep = speedRef.current === 'normal' || frameSkipRef.current % 3 === 0
+
+      if (shouldStep) {
+        if (faucetOnRef.current) {
+          autoTimerRef.current += dt
+          const interval = 1 / faucetFreqRef.current
+          if (autoTimerRef.current >= interval) {
+            autoTimerRef.current = 0
+            addDroplet(FAUCET_GX, FAUCET_GY, faucetAmpRef.current, dropletRadiusRef.current)
+          }
+        }
+        physicsStep()
+        timeRef.current += dt
+        historyRef.current.push({ t: timeRef.current, h: curRef.current[FAUCET_GY * GRID + Math.floor(GRID * 0.7)] })
+        const cutoff = timeRef.current - 7
+        while (historyRef.current.length && historyRef.current[0].t < cutoff) {
+          historyRef.current.shift()
         }
       }
 
-      physicsStep()
-      renderWater()
-      renderProfile()
+      if (viewModeRef.current === 'top') renderTop()
+      else renderSide()
+      renderGraph()
       rafRef.current = requestAnimationFrame(animate)
     }
 
     rafRef.current = requestAnimationFrame(animate)
 
-    // Click / tap anywhere on the pond to drop a droplet at that point.
     const handlePointerDown = (e: PointerEvent) => {
+      if (viewModeRef.current !== 'top') return
       const rect = canvas.getBoundingClientRect()
       const px = (e.clientX - rect.left) / rect.width
       const py = (e.clientY - rect.top) / rect.height
-      addDroplet(px * GRID, py * GRID)
+      addDroplet(px * GRID, py * GRID, 2.2, dropletRadiusRef.current)
     }
     canvas.addEventListener('pointerdown', handlePointerDown)
 
@@ -322,7 +434,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       canvas.removeEventListener('pointerdown', handlePointerDown)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [showGraph, showScale])
 
   return (
     <div className="sim">
@@ -341,23 +453,50 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           <div className="sim__panel sim__panel--pond">
             <canvas ref={canvasRef} className="sim__canvas" />
           </div>
-          {showProfile && (
-            <div className="sim__panel sim__panel--wave">
-              <div className="sim__wave-legend">
-                <span className="mono">
-                  cross-section through last drop point
-                </span>
-              </div>
-              <canvas
-                ref={profileRef}
-                className="sim__canvas sim__canvas--wave"
-              />
+          <div className="sim__panel sim__panel--wave">
+            <div className="sim__wave-legend">
+              <span className="mono">h(t) — probe point, 70% across the pond</span>
             </div>
-          )}
+            <canvas ref={profileRef} className="sim__canvas sim__canvas--wave" />
+          </div>
         </div>
 
         <div className="sim__controls">
           <div className="sim__control-group">
+            <RadioGroup<ViewMode>
+              legend="View"
+              options={[
+                { value: 'top', label: 'Top View' },
+                { value: 'side', label: 'Side View' },
+              ]}
+              value={viewMode}
+              onChange={setViewMode}
+            />
+          </div>
+
+          <div className="sim__control-group">
+            <Checkbox label="Faucet drips" checked={faucetOn} onChange={setFaucetOn} />
+            {faucetOn && (
+              <>
+                <Dial
+                  label="Frequency"
+                  value={faucetFreq}
+                  min={0.1}
+                  max={3}
+                  step={0.05}
+                  unit="Hz"
+                  onChange={setFaucetFreq}
+                />
+                <Dial
+                  label="Amplitude"
+                  value={faucetAmp}
+                  min={0.5}
+                  max={5}
+                  step={0.1}
+                  onChange={setFaucetAmp}
+                />
+              </>
+            )}
             <Dial
               label="Damping"
               value={damping}
@@ -366,48 +505,23 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
               step={0.001}
               onChange={setDamping}
             />
-            <Dial
-              label="Droplet radius"
-              value={dropletRadius}
-              min={1}
-              max={10}
-              step={0.5}
-              unit="cells"
-              onChange={setDropletRadius}
-            />
-            <Dial
-              label="Droplet strength"
-              value={dropletStrength}
-              min={0.5}
-              max={5}
-              step={0.1}
-              onChange={setDropletStrength}
+          </div>
+
+          <div className="sim__control-group">
+            <RadioGroup<Speed>
+              legend="Speed"
+              options={[
+                { value: 'normal', label: 'Normal' },
+                { value: 'slow', label: 'Slow' },
+              ]}
+              value={speed}
+              onChange={setSpeed}
             />
           </div>
 
           <div className="sim__control-group">
-            <Switch
-              label="Auto-drip"
-              checked={autoDrip}
-              onChange={setAutoDrip}
-              swatch="var(--teal)"
-            />
-            {autoDrip && (
-              <Dial
-                label="Drip interval"
-                value={dripInterval}
-                min={0.3}
-                max={3}
-                step={0.1}
-                unit="s"
-                onChange={setDripInterval}
-              />
-            )}
-            <Switch
-              label="Cross-section plot"
-              checked={showProfile}
-              onChange={setShowProfile}
-            />
+            <Checkbox label="Graph" checked={showGraph} onChange={setShowGraph} />
+            <Checkbox label="Scale bar" checked={showScale} onChange={setShowScale} />
           </div>
 
           <div className="sim__buttons">
@@ -417,15 +531,12 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           </div>
 
           <p className="sim__note">
-            Click anywhere on the pond to drop water. Each cell's height
-            updates from its four neighbors via a discretized 2D wave
-            equation — <code className="mono">
-              h[x,y] ← (Σ neighbors)/2 − h_prev[x,y]
-            </code>{' '}
-            — which is why the disturbance spreads as an expanding
-            circular ring rather than staying local. Shading comes from
-            the surface normal of the height field, lit like a real pond
-            from above.
+            In <strong>Top View</strong> you can still click anywhere to
+            drop water by hand, on top of the faucet's steady drips.{' '}
+            <strong>Side View</strong> cuts a cross-section right through
+            the faucet's row, so you can watch the same 2D wave equation
+            (<code className="mono">h ← (Σ neighbors)/2 − h_prev</code>)
+            you saw from above, now as a proper water-level profile.
           </p>
         </div>
       </div>
