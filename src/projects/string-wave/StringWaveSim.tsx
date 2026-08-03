@@ -3,6 +3,14 @@ import Dial from '../../components/Dial'
 import RadioGroup from '../../components/RadioGroup'
 import Checkbox from '../../components/Checkbox'
 import type { Theme } from '../../lib/useTheme'
+import {
+  drawDraggableRuler,
+  drawDraggableStopwatch,
+  hitTestRuler,
+  hitTestStopwatch,
+  hitTestStopwatchReset,
+  type ToolPos,
+} from '../../lib/canvasTools'
 import './StringWaveSim.css'
 
 interface Props {
@@ -18,6 +26,7 @@ interface Colors {
   drive: string
   text: string
   brass: string
+  panel: string
 }
 
 type SourceMode = 'manual' | 'oscillate' | 'pulse'
@@ -26,10 +35,7 @@ type Speed = 'normal' | 'slow'
 
 const N = 220
 const WINDOW_SECONDS = 6
-// Last fraction of the string over which an "open" boundary quietly
-// absorbs energy instead of reflecting it — approximates an infinitely
-// long string.
-const ABSORB_ZONE = 0.18
+const STEP_DT = 0.1 // fixed step size for the "Step" button
 
 export default function StringWaveSim({ theme, onBack }: Props) {
   const stringRef = useRef<HTMLCanvasElement>(null)
@@ -45,12 +51,20 @@ export default function StringWaveSim({ theme, onBack }: Props) {
   const rafRef = useRef<number>(0)
   const draggingRef = useRef(false)
   const dragYRef = useRef(0)
+  const smoothedDragYRef = useRef(0)
   const manualHoldRef = useRef(0)
+  const stepRequestRef = useRef(false)
+
+  const rulerPosRef = useRef<ToolPos>({ x: 20, y: 16 })
+  const stopwatchPosRef = useRef<ToolPos>({ x: 140, y: 16 })
+  const draggedToolRef = useRef<'ruler' | 'stopwatch' | null>(null)
+  const toolDragOffsetRef = useRef({ dx: 0, dy: 0 })
+  const stopwatchOffsetRef = useRef(0)
 
   const [mode, setMode] = useState<SourceMode>('oscillate')
   const [endType, setEndType] = useState<EndType>('fixed')
   const [speed, setSpeed] = useState<Speed>('normal')
-  const [tension, setTension] = useState(0.5) // wave-speed-squared (Courant number)
+  const [tension, setTension] = useState(0.5)
   const [damping, setDamping] = useState(0.999)
   const [driveFreq, setDriveFreq] = useState(0.6)
   const [driveAmp, setDriveAmp] = useState(50)
@@ -58,6 +72,7 @@ export default function StringWaveSim({ theme, onBack }: Props) {
   const [showReference, setShowReference] = useState(true)
   const [showRuler, setShowRuler] = useState(false)
   const [showStopwatch, setShowStopwatch] = useState(false)
+  const [smoothStroke, setSmoothStroke] = useState(true)
 
   const modeRef = useRef(mode)
   const endTypeRef = useRef(endType)
@@ -67,6 +82,7 @@ export default function StringWaveSim({ theme, onBack }: Props) {
   const driveFreqRef = useRef(driveFreq)
   const driveAmpRef = useRef(driveAmp)
   const runningRef = useRef(running)
+  const smoothStrokeRef = useRef(smoothStroke)
 
   useEffect(() => {
     modeRef.current = mode
@@ -92,6 +108,9 @@ export default function StringWaveSim({ theme, onBack }: Props) {
   useEffect(() => {
     runningRef.current = running
   }, [running])
+  useEffect(() => {
+    smoothStrokeRef.current = smoothStroke
+  }, [smoothStroke])
 
   useEffect(() => {
     const s = getComputedStyle(document.documentElement)
@@ -104,6 +123,7 @@ export default function StringWaveSim({ theme, onBack }: Props) {
       drive: get('--brass-bright'),
       text: get('--text-muted'),
       brass: get('--brass'),
+      panel: get('--panel'),
     }
   }, [theme])
 
@@ -114,6 +134,8 @@ export default function StringWaveSim({ theme, onBack }: Props) {
     timeRef.current = 0
     historyRef.current = []
     manualHoldRef.current = 0
+    smoothedDragYRef.current = 0
+    stopwatchOffsetRef.current = 0
   }
 
   const sendPulse = () => {
@@ -121,10 +143,6 @@ export default function StringWaveSim({ theme, onBack }: Props) {
     const yPrev = yPrevRef.current
     const halfWidth = 22
     const amp = 90
-    // A right-traveling pulse (d'Alembert form): the initial-velocity
-    // buffer is the same bump shifted slightly left, so the wave
-    // equation resolves it into a single rightward-moving hump instead
-    // of splitting into two.
     const shift = 6
     for (let i = 1; i <= halfWidth * 2 && i < N - 1; i++) {
       const frac = (i - halfWidth) / halfWidth
@@ -160,20 +178,6 @@ export default function StringWaveSim({ theme, onBack }: Props) {
     }
     window.addEventListener('resize', handleResize)
 
-    // Precompute the absorption profile once: 1.0 (no extra damping)
-    // everywhere except the last ABSORB_ZONE fraction of the string,
-    // where it ramps down toward a strongly damped edge.
-    const absorbProfile = new Float32Array(N)
-    const absorbStart = Math.floor(N * (1 - ABSORB_ZONE))
-    for (let i = 0; i < N; i++) {
-      if (i < absorbStart) {
-        absorbProfile[i] = 1
-      } else {
-        const frac = (i - absorbStart) / (N - 1 - absorbStart)
-        absorbProfile[i] = 1 - frac * 0.6
-      }
-    }
-
     const physicsStep = (dt: number) => {
       const y = yRef.current
       const yPrev = yPrevRef.current
@@ -188,27 +192,48 @@ export default function StringWaveSim({ theme, onBack }: Props) {
         y[0] = driveAmpRef.current * Math.sin(2 * Math.PI * driveFreqRef.current * t)
       } else if (mode === 'manual') {
         if (draggingRef.current) {
-          y[0] = dragYRef.current
-          manualHoldRef.current = dragYRef.current
+          // "Smooth stroke" applies an exponential moving average to the
+          // raw pointer position — this is what actually fixes the
+          // "can't make a clean sine by hand" problem: real mouse input
+          // is jittery high-frequency noise riding on top of your
+          // intended rhythm, and a low-pass filter removes exactly that
+          // noise while keeping your rhythm intact. It never touches the
+          // string's own physics (tension/damping/wave speed), only the
+          // hand's input signal.
+          if (smoothStrokeRef.current) {
+            const alpha = 0.12
+            smoothedDragYRef.current += (dragYRef.current - smoothedDragYRef.current) * alpha
+            y[0] = smoothedDragYRef.current
+          } else {
+            y[0] = dragYRef.current
+            smoothedDragYRef.current = dragYRef.current
+          }
+          manualHoldRef.current = y[0]
         } else {
           y[0] = manualHoldRef.current
         }
       } else {
-        // pulse mode: left end stays anchored; sendPulse() injects the
-        // traveling hump directly into the buffers.
         y[0] = 0
       }
 
       for (let i = 1; i < N - 1; i++) {
         const laplacian = y[i + 1] - 2 * y[i] + y[i - 1]
-        const localDamp = end === 'none' ? damp * absorbProfile[i] : damp
-        yNext[i] = (2 * y[i] - yPrev[i] + c2 * laplacian) * localDamp
+        yNext[i] = (2 * y[i] - yPrev[i] + c2 * laplacian) * damp
       }
 
       if (end === 'fixed') {
         yNext[N - 1] = 0
-      } else {
+      } else if (end === 'loose') {
         yNext[N - 1] = yNext[N - 2]
+      } else {
+        // 'none': a first-order Mur absorbing boundary condition — the
+        // standard non-reflecting termination for a 1D wave equation.
+        // r is the Courant number (wave speed in grid units); the
+        // formula lets the wave exit through this boundary with
+        // (ideally) zero reflected energy instead of bouncing back.
+        const r = Math.sqrt(c2)
+        const coef = (r - 1) / (r + 1)
+        yNext[N - 1] = y[N - 2] + coef * (yNext[N - 2] - y[N - 1])
       }
       yNext[0] = y[0]
 
@@ -217,6 +242,11 @@ export default function StringWaveSim({ theme, onBack }: Props) {
       yNextRef.current = yPrev
 
       timeRef.current += dt
+      historyRef.current.push({ t: timeRef.current, y: yRef.current[Math.floor(N / 2)] })
+      const cutoff = timeRef.current - WINDOW_SECONDS - 1
+      while (historyRef.current.length && historyRef.current[0].t < cutoff) {
+        historyRef.current.shift()
+      }
     }
 
     const drawLeftIcon = (ctx: CanvasRenderingContext2D, x: number, y: number, colors: Colors) => {
@@ -330,30 +360,15 @@ export default function StringWaveSim({ theme, onBack }: Props) {
       ctx.fill()
 
       if (showRuler) {
-        const rulerY = h - 22
-        ctx.strokeStyle = colors.text
-        ctx.lineWidth = 1
-        ctx.beginPath()
-        ctx.moveTo(0, rulerY)
-        ctx.lineTo(w, rulerY)
-        ctx.stroke()
-        ctx.font = '10px var(--font-mono, monospace)'
-        ctx.fillStyle = colors.text
-        for (let i = 0; i <= 10; i++) {
-          const px = (i / 10) * w
-          const tick = i % 5 === 0 ? 7 : 4
-          ctx.beginPath()
-          ctx.moveTo(px, rulerY - tick)
-          ctx.lineTo(px, rulerY + tick)
-          ctx.stroke()
-        }
-        ctx.fillText('string length →', 4, rulerY + 16)
+        drawDraggableRuler(ctx, rulerPosRef.current, colors)
       }
-
       if (showStopwatch) {
-        ctx.font = '13px var(--font-mono, monospace)'
-        ctx.fillStyle = colors.text
-        ctx.fillText(`${timeRef.current.toFixed(1)} s`, w - 64, 18)
+        drawDraggableStopwatch(
+          ctx,
+          stopwatchPosRef.current,
+          timeRef.current - stopwatchOffsetRef.current,
+          colors,
+        )
       }
     }
 
@@ -405,12 +420,13 @@ export default function StringWaveSim({ theme, onBack }: Props) {
 
       if (runningRef.current) {
         physicsStep(dt)
-        const mid = Math.floor(N / 2)
-        historyRef.current.push({ t: timeRef.current, y: yRef.current[mid] })
-        const cutoff = timeRef.current - WINDOW_SECONDS - 1
-        while (historyRef.current.length && historyRef.current[0].t < cutoff) {
-          historyRef.current.shift()
-        }
+      } else if (stepRequestRef.current) {
+        stepRequestRef.current = false
+        // Fixed-size step, independent of frame rate — split into
+        // sub-steps so a 0.1s jump stays numerically stable even at
+        // high tension.
+        const sub = 8
+        for (let i = 0; i < sub; i++) physicsStep(STEP_DT / sub)
       }
 
       drawString()
@@ -424,17 +440,50 @@ export default function StringWaveSim({ theme, onBack }: Props) {
       const midY = rect.height / 2
       dragYRef.current = Math.max(-140, Math.min(140, midY - (clientY - rect.top)))
     }
+
     const onPointerDown = (e: PointerEvent) => {
+      const rect = stringCanvas.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const py = e.clientY - rect.top
+
+      if (showStopwatch && hitTestStopwatchReset(stopwatchPosRef.current, px, py)) {
+        stopwatchOffsetRef.current = timeRef.current
+        return
+      }
+      if (showStopwatch && hitTestStopwatch(stopwatchPosRef.current, px, py)) {
+        draggedToolRef.current = 'stopwatch'
+        toolDragOffsetRef.current = { dx: px - stopwatchPosRef.current.x, dy: py - stopwatchPosRef.current.y }
+        return
+      }
+      if (showRuler && hitTestRuler(rulerPosRef.current, px, py)) {
+        draggedToolRef.current = 'ruler'
+        toolDragOffsetRef.current = { dx: px - rulerPosRef.current.x, dy: py - rulerPosRef.current.y }
+        return
+      }
+
       if (modeRef.current !== 'manual') return
       draggingRef.current = true
       updateDrag(e.clientY)
     }
     const onPointerMove = (e: PointerEvent) => {
+      const rect = stringCanvas.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const py = e.clientY - rect.top
+
+      if (draggedToolRef.current === 'stopwatch') {
+        stopwatchPosRef.current = { x: px - toolDragOffsetRef.current.dx, y: py - toolDragOffsetRef.current.dy }
+        return
+      }
+      if (draggedToolRef.current === 'ruler') {
+        rulerPosRef.current = { x: px - toolDragOffsetRef.current.dx, y: py - toolDragOffsetRef.current.dy }
+        return
+      }
       if (!draggingRef.current) return
       updateDrag(e.clientY)
     }
     const onPointerUp = () => {
       draggingRef.current = false
+      draggedToolRef.current = null
     }
     stringCanvas.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointermove', onPointerMove)
@@ -502,23 +551,16 @@ export default function StringWaveSim({ theme, onBack }: Props) {
         <div className="sim__controls">
           {mode === 'oscillate' && (
             <div className="sim__control-group">
-              <Dial
-                label="Drive frequency"
-                value={driveFreq}
-                min={0.1}
-                max={3}
-                step={0.05}
-                unit="Hz"
-                onChange={setDriveFreq}
-              />
-              <Dial
-                label="Drive amplitude"
-                value={driveAmp}
-                min={5}
-                max={110}
-                step={1}
-                unit="px"
-                onChange={setDriveAmp}
+              <Dial label="Drive frequency" value={driveFreq} min={0.1} max={3} step={0.05} unit="Hz" onChange={setDriveFreq} />
+              <Dial label="Drive amplitude" value={driveAmp} min={5} max={110} step={1} unit="px" onChange={setDriveAmp} />
+            </div>
+          )}
+          {mode === 'manual' && (
+            <div className="sim__control-group">
+              <Checkbox
+                label="Smooth stroke (steadier sine)"
+                checked={smoothStroke}
+                onChange={setSmoothStroke}
               />
             </div>
           )}
@@ -531,22 +573,8 @@ export default function StringWaveSim({ theme, onBack }: Props) {
           )}
 
           <div className="sim__control-group">
-            <Dial
-              label="Tension (c²)"
-              value={tension}
-              min={0.05}
-              max={0.95}
-              step={0.01}
-              onChange={setTension}
-            />
-            <Dial
-              label="Damping"
-              value={damping}
-              min={0.99}
-              max={1}
-              step={0.0005}
-              onChange={setDamping}
-            />
+            <Dial label="Tension (c²)" value={tension} min={0.05} max={0.95} step={0.01} onChange={setTension} />
+            <Dial label="Damping" value={damping} min={0.99} max={1} step={0.0005} onChange={setDamping} />
           </div>
 
           <div className="sim__control-group">
@@ -568,11 +596,17 @@ export default function StringWaveSim({ theme, onBack }: Props) {
           </div>
 
           <div className="sim__buttons">
-            <button
-              className="sim__btn sim__btn--primary"
-              onClick={() => setRunning((r) => !r)}
-            >
+            <button className="sim__btn sim__btn--primary" onClick={() => setRunning((r) => !r)}>
               {running ? 'Pause' : 'Play'}
+            </button>
+            <button
+              className="sim__btn"
+              onClick={() => {
+                stepRequestRef.current = true
+              }}
+              disabled={running}
+            >
+              Step +0.1s
             </button>
             <button className="sim__btn" onClick={reset}>
               Reset
@@ -580,14 +614,14 @@ export default function StringWaveSim({ theme, onBack }: Props) {
           </div>
 
           <p className="sim__note">
-            <strong>Manual</strong> — grab and shake the left end yourself.{' '}
-            <strong>Oscillate</strong> — a steady driver; match its
-            frequency to a harmonic against a fixed end for a standing
-            wave. <strong>Pulse</strong> — send a single traveling hump
-            and watch how each end type reflects it differently: a fixed
-            end flips it upside down, a loose end reflects it upright,
-            and "No End" lets it dissipate as if the string went on
-            forever.
+            <strong>Manual</strong> — with "Smooth stroke" on, your rough
+            hand motion gets filtered into a clean, steady wave (the
+            physics itself is untouched — only the noisy human input is
+            smoothed); turn it off for raw, unfiltered hand control.{' '}
+            <strong>No End</strong> now uses a proper absorbing boundary
+            so the wave actually leaves instead of bouncing back. Drag
+            the ruler or stopwatch by their body to move them; click the
+            small dot on the stopwatch to zero it.
           </p>
         </div>
       </div>

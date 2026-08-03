@@ -14,13 +14,16 @@ export default function Home({ theme, onToggleTheme, onOpenProject }: Props) {
   return (
     <div className="home">
       <header className="home__header">
-        <div>
-          <span className="home__eyebrow">The Physics Bench</span>
-          <h1 className="home__title">A cabinet of working simulations</h1>
-          <p className="home__lede">
-            Each plate below opens a small, self-contained demonstration —
-            built to build intuition, not just show an animation.
-          </p>
+        <div className="home__brand">
+          <img src="/logo.svg" alt="" className="home__logo" width={52} height={52} />
+          <div>
+            <span className="home__eyebrow">The Physics Bench</span>
+            <h1 className="home__title">A cabinet of working simulations</h1>
+            <p className="home__lede">
+              Each plate below opens a small, self-contained demonstration —
+              built to build intuition, not just show an animation.
+            </p>
+          </div>
         </div>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </header>

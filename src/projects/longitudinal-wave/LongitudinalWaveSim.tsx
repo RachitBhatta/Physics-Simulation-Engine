@@ -22,13 +22,13 @@ interface Colors {
 }
 
 type Speed = 'normal' | 'slow'
+type EndType = 'closed' | 'open' | 'none'
 
 // Carrier field: a 1D wave equation solved along x, sampled by however
 // many molecules the density dial asks for. Decoupling the physics
 // resolution from the molecule count means turning "Molecules" up or
 // down never changes the wave's behavior, only how densely it's drawn.
 const CN = 170
-const ABSORB_ZONE = 0.2
 const TRACK_FRAC = 0.42
 
 export default function LongitudinalWaveSim({ theme, onBack }: Props) {
@@ -51,6 +51,7 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
   const [intensity, setIntensity] = useState(12)
   const [density, setDensity] = useState(12) // rows of molecules
   const [speed, setSpeed] = useState<Speed>('normal')
+  const [endType, setEndType] = useState<EndType>('none')
   const [running, setRunning] = useState(true)
 
   const stiffnessRef = useRef(stiffness)
@@ -60,7 +61,9 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
   const intensityRef = useRef(intensity)
   const densityRef = useRef(density)
   const speedRef = useRef(speed)
+  const endTypeRef = useRef(endType)
   const runningRef = useRef(running)
+  const stepRequestRef = useRef(false)
 
   useEffect(() => {
     stiffnessRef.current = stiffness
@@ -83,6 +86,9 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
   useEffect(() => {
     speedRef.current = speed
   }, [speed])
+  useEffect(() => {
+    endTypeRef.current = endType
+  }, [endType])
   useEffect(() => {
     runningRef.current = running
   }, [running])
@@ -150,19 +156,6 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
     }
     window.addEventListener('resize', handleResize)
 
-    // Absorbing zone at the FAR (left) end from the speaker, so sound
-    // fades into open air instead of bouncing back as an echo.
-    const absorbProfile = new Float32Array(CN)
-    const absorbEnd = Math.floor(CN * ABSORB_ZONE)
-    for (let i = 0; i < CN; i++) {
-      if (i > absorbEnd) {
-        absorbProfile[i] = 1
-      } else {
-        const frac = 1 - i / absorbEnd
-        absorbProfile[i] = 1 - frac * 0.6
-      }
-    }
-
     const physicsStep = (dt: number) => {
       const u = uRef.current
       const uPrev = uPrevRef.current
@@ -170,6 +163,7 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
       const c2 = stiffnessRef.current
       const damp = dampingRef.current
       const t = timeRef.current
+      const end = endTypeRef.current
 
       // Right boundary (index CN-1) is the speaker cone itself.
       if (speakerOnRef.current) {
@@ -178,9 +172,26 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
 
       for (let i = 1; i < CN - 1; i++) {
         const laplacian = u[i + 1] - 2 * u[i] + u[i - 1]
-        uNext[i] = (2 * u[i] - uPrev[i] + c2 * laplacian) * damp * absorbProfile[i]
+        uNext[i] = (2 * u[i] - uPrev[i] + c2 * laplacian) * damp
       }
-      uNext[0] = uNext[1]
+
+      // Far (left) boundary — the end opposite the speaker:
+      if (end === 'closed') {
+        // A rigid wall: molecules right at it can't move, so the wave
+        // reflects inverted (like sound bouncing off a solid surface).
+        uNext[0] = 0
+      } else if (end === 'open') {
+        // An open pipe end: displacement is free, so the wave reflects
+        // upright instead of inverted.
+        uNext[0] = uNext[1]
+      } else {
+        // 'none': first-order Mur absorbing boundary — lets the wave
+        // exit with (ideally) no reflected energy, simulating open air
+        // that just keeps going instead of a pipe with an end at all.
+        const r = Math.sqrt(c2)
+        const coef = (r - 1) / (r + 1)
+        uNext[0] = u[1] + coef * (uNext[1] - u[0])
+      }
       uNext[CN - 1] = u[CN - 1]
 
       uPrevRef.current = u
@@ -323,6 +334,15 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
     }
 
     let lastTs: number | null = null
+    const advance = (dt: number) => {
+      physicsStep(dt)
+      const trackIdx = Math.round(TRACK_FRAC * (CN - 1))
+      historyRef.current.push({ t: timeRef.current, u: uRef.current[trackIdx] })
+      const cutoff = timeRef.current - 7
+      while (historyRef.current.length && historyRef.current[0].t < cutoff) {
+        historyRef.current.shift()
+      }
+    }
     const animate = (ts: number) => {
       if (lastTs == null) lastTs = ts
       const rawDt = Math.min((ts - lastTs) / 1000, 0.033)
@@ -330,13 +350,11 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
       lastTs = ts
 
       if (runningRef.current) {
-        physicsStep(dt)
-        const trackIdx = Math.round(TRACK_FRAC * (CN - 1))
-        historyRef.current.push({ t: timeRef.current, u: uRef.current[trackIdx] })
-        const cutoff = timeRef.current - 7
-        while (historyRef.current.length && historyRef.current[0].t < cutoff) {
-          historyRef.current.shift()
-        }
+        advance(dt)
+      } else if (stepRequestRef.current) {
+        stepRequestRef.current = false
+        const sub = 8
+        for (let i = 0; i < sub; i++) advance(0.1 / sub)
       }
 
       drawChain()
@@ -445,6 +463,19 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
           </div>
 
           <div className="sim__control-group">
+            <RadioGroup<EndType>
+              legend="Far end (opposite speaker)"
+              options={[
+                { value: 'closed', label: 'Closed End' },
+                { value: 'open', label: 'Open End' },
+                { value: 'none', label: 'No End' },
+              ]}
+              value={endType}
+              onChange={setEndType}
+            />
+          </div>
+
+          <div className="sim__control-group">
             <RadioGroup<Speed>
               legend="Speed"
               options={[
@@ -463,6 +494,17 @@ export default function LongitudinalWaveSim({ theme, onBack }: Props) {
             >
               {running ? 'Pause' : 'Play'}
             </button>
+            <button
+              className="sim__btn"
+              onClick={() => {
+                stepRequestRef.current = true
+              }}
+              disabled={running}
+            >
+              Step +0.1s
+            </button>
+          </div>
+          <div className="sim__buttons">
             <button className="sim__btn" onClick={pushPulse}>
               Single push
             </button>

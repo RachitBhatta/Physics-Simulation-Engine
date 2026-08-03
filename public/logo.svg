@@ -1,0 +1,60 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="plate" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#3a2a19" />
+      <stop offset="100%" stop-color="#20160d" />
+    </radialGradient>
+    <linearGradient id="brassRing" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eecb63" />
+      <stop offset="55%" stop-color="#a97f45" />
+      <stop offset="100%" stop-color="#c79a54" />
+    </linearGradient>
+    <linearGradient id="bob" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eecb63" />
+      <stop offset="100%" stop-color="#a97f45" />
+    </linearGradient>
+  </defs>
+
+  <!-- outer plate -->
+  <circle cx="128" cy="128" r="122" fill="url(#plate)" stroke="url(#brassRing)" stroke-width="6" />
+
+  <!-- engraved inner ring with protractor-style ticks, echoing the
+       pendulum sim's protractor -->
+  <circle cx="128" cy="128" r="100" fill="none" stroke="#a97f45" stroke-width="1.5" opacity="0.55" />
+
+  <!-- reference line (equilibrium), matching every sim's dashed guide -->
+  <line x1="128" y1="58" x2="128" y2="210" stroke="#c79a54" stroke-width="1.5" stroke-dasharray="3 5" opacity="0.5" />
+
+  <!-- sine wave, tying the wave sims together -->
+  <path
+    d="M 40 176 C 66 150, 92 202, 118 176 C 144 150, 170 202, 196 176 C 208 163, 214 163, 216 176"
+    fill="none"
+    stroke="#5fb6a4"
+    stroke-width="5"
+    stroke-linecap="round"
+  />
+
+  <!-- pendulum: pivot, rod, bob -->
+  <circle cx="128" cy="58" r="5" fill="#eecb63" stroke="#20160d" stroke-width="1.5" />
+  <line x1="128" y1="58" x2="172" y2="128" stroke="#e8d9b8" stroke-width="3" stroke-linecap="round" />
+  <circle cx="172" cy="128" r="17" fill="url(#bob)" stroke="#20160d" stroke-width="2" />
+
+  <!-- protractor ticks around the pendulum's swing arc -->
+  <g stroke="#c79a54" stroke-width="2" opacity="0.8">
+    <line x1="128" y1="70" x2="128" y2="80" />
+    <line x1="167.5" y1="80.2" x2="161.7" y2="88.4" />
+    <line x1="198.7" y1="110.9" x2="189" y2="115.3" />
+  </g>
+
+  <!-- outer rim ticks (protractor-style, full ring) -->
+  <g stroke="#a97f45" stroke-width="1.5" opacity="0.5">
+    <line x1="128" y1="30" x2="128" y2="40" />
+    <line x1="128" y1="216" x2="128" y2="226" />
+    <line x1="30" y1="128" x2="40" y2="128" />
+    <line x1="216" y1="128" x2="226" y2="128" />
+    <line x1="58.8" y1="58.8" x2="66" y2="66" />
+    <line x1="190" y1="58.8" x2="182.8" y2="66" />
+    <line x1="58.8" y1="197.2" x2="66" y2="190" />
+    <line x1="190" y1="197.2" x2="182.8" y2="190" />
+  </g>
+</svg>

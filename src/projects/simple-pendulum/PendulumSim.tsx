@@ -2,7 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import Dial from '../../components/Dial'
 import Switch from '../../components/Switch'
 import Checkbox from '../../components/Checkbox'
+import RadioGroup from '../../components/RadioGroup'
 import type { Theme } from '../../lib/useTheme'
+import {
+  drawDraggableRuler,
+  drawDraggableStopwatch,
+  hitTestRuler,
+  hitTestStopwatch,
+  hitTestStopwatchReset,
+  type ToolPos,
+} from '../../lib/canvasTools'
 import './PendulumSim.css'
 
 interface Props {
@@ -19,7 +28,13 @@ interface Colors {
   accel: string
   trail: string
   text: string
+  panel: string
+  violet: string
+  brass: string
 }
+
+type GraphType = 'angle' | 'xy' | 'energy'
+type Speed = 'normal' | 'slow'
 
 const PIXELS_PER_METER = 220
 const SUBSTEPS = 8
@@ -35,11 +50,18 @@ export default function PendulumSim({ theme, onBack }: Props) {
   const omegaRef = useRef(0)
   const draggingRef = useRef(false)
   const timeRef = useRef(0)
-  const historyRef = useRef<{ t: number; theta: number }[]>([])
+  const historyRef = useRef<{ t: number; theta: number; x: number; y: number; ke: number; pe: number }[]>([])
   const trailRef = useRef<{ x: number; y: number }[]>([])
   const lastCrossingRef = useRef<number | null>(null)
   const measuredPeriodRef = useRef<number | null>(null)
   const lastSignRef = useRef(1)
+  const stepRequestRef = useRef(false)
+
+  const rulerPosRef = useRef<ToolPos>({ x: 16, y: 16 })
+  const stopwatchPosRef = useRef<ToolPos>({ x: 130, y: 16 })
+  const draggedToolRef = useRef<'ruler' | 'stopwatch' | null>(null)
+  const toolDragOffsetRef = useRef({ dx: 0, dy: 0 })
+  const stopwatchOffsetRef = useRef(0)
 
   const [length, setLength] = useState(0.7) // meters
   const [mass, setMass] = useState(1) // kg (affects friction's relative effect)
@@ -51,6 +73,8 @@ export default function PendulumSim({ theme, onBack }: Props) {
   const [showRuler, setShowRuler] = useState(false)
   const [showStopwatch, setShowStopwatch] = useState(false)
   const [showTrace, setShowTrace] = useState(false)
+  const [graphType, setGraphType] = useState<GraphType>('angle')
+  const [speed, setSpeed] = useState<Speed>('normal')
 
   const lengthRef = useRef(length)
   const massRef = useRef(mass)
@@ -58,6 +82,15 @@ export default function PendulumSim({ theme, onBack }: Props) {
   const frictionRef = useRef(friction)
   const runningRef = useRef(running)
   const showTraceRef = useRef(showTrace)
+  const graphTypeRef = useRef(graphType)
+  const speedRef = useRef(speed)
+
+  useEffect(() => {
+    graphTypeRef.current = graphType
+  }, [graphType])
+  useEffect(() => {
+    speedRef.current = speed
+  }, [speed])
 
   useEffect(() => {
     lengthRef.current = length
@@ -91,6 +124,9 @@ export default function PendulumSim({ theme, onBack }: Props) {
       accel: get('--rust'),
       trail: get('--brass'),
       text: get('--text-muted'),
+      panel: get('--panel'),
+      violet: get('--violet'),
+      brass: get('--brass'),
     }
   }, [theme])
 
@@ -311,32 +347,17 @@ export default function PendulumSim({ theme, onBack }: Props) {
       ctx.fillText(`θ = ${((theta * 180) / Math.PI).toFixed(1)}°`, 14, h - 14)
 
       if (showRuler) {
-        const rulerX = 20
-        ctx.strokeStyle = colors.text
-        ctx.lineWidth = 1
-        ctx.beginPath()
-        ctx.moveTo(rulerX, py)
-        ctx.lineTo(rulerX, py + L)
-        ctx.stroke()
-        const meters = lengthRef.current
-        const steps = Math.round(meters * 10)
-        for (let i = 0; i <= steps; i++) {
-          const yy = py + (i / steps) * L
-          const long = i % 5 === 0
-          ctx.beginPath()
-          ctx.moveTo(rulerX - (long ? 6 : 3), yy)
-          ctx.lineTo(rulerX + (long ? 6 : 3), yy)
-          ctx.stroke()
-        }
-        ctx.fillText(`${meters.toFixed(2)} m`, rulerX - 14, py + L + 16)
+        drawDraggableRuler(ctx, rulerPosRef.current, colors)
       }
 
       if (showStopwatch) {
-        ctx.fillText(`${timeRef.current.toFixed(1)} s`, w - 64, 18)
+        drawDraggableStopwatch(ctx, stopwatchPosRef.current, timeRef.current - stopwatchOffsetRef.current, colors)
       }
 
       if (showTrace) {
         const p = measuredPeriodRef.current
+        ctx.font = '13px var(--font-mono, monospace)'
+        ctx.fillStyle = colors.text
         ctx.fillText(p ? `T ≈ ${p.toFixed(2)} s` : 'T ≈ measuring…', w - 130, h - 14)
       }
     }
@@ -361,39 +382,76 @@ export default function PendulumSim({ theme, onBack }: Props) {
       const tNow = hist[hist.length - 1].t
       const WINDOW = 6
       const tMin = tNow - WINDOW
-      const scale = (h / 2 - 8) / MAX_ANGLE
 
-      ctx.strokeStyle = colors.velocity
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      let started = false
-      for (const p of hist) {
-        if (p.t < tMin) continue
-        const px = ((p.t - tMin) / WINDOW) * w
-        const py = midY - p.theta * scale
-        if (!started) {
-          ctx.moveTo(px, py)
-          started = true
-        } else {
-          ctx.lineTo(px, py)
+      const plotSeries = (
+        pick: (p: (typeof hist)[number]) => number,
+        color: string,
+        scale: number,
+        baseline: number,
+      ) => {
+        ctx.strokeStyle = color
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        let started = false
+        for (const p of hist) {
+          if (p.t < tMin) continue
+          const px = ((p.t - tMin) / WINDOW) * w
+          const py = baseline - pick(p) * scale
+          if (!started) {
+            ctx.moveTo(px, py)
+            started = true
+          } else {
+            ctx.lineTo(px, py)
+          }
         }
+        ctx.stroke()
       }
-      ctx.stroke()
+
+      const graphType = graphTypeRef.current
+      if (graphType === 'angle') {
+        plotSeries((p) => p.theta, colors.velocity, (h / 2 - 8) / MAX_ANGLE, midY)
+      } else if (graphType === 'xy') {
+        const L = lengthRef.current * PIXELS_PER_METER
+        plotSeries((p) => p.x, colors.velocity, (h / 2 - 8) / L, midY)
+        plotSeries((p) => p.y, colors.violet, (h / 2 - 8) / L, midY)
+      } else {
+        // energy: plot on a shared 0-to-max baseline instead of centered,
+        // since KE and PE are never negative
+        const maxE = Math.max(1e-6, ...hist.filter((p) => p.t >= tMin).map((p) => Math.max(p.ke, p.pe)))
+        const scale = (h - 16) / maxE
+        plotSeries((p) => p.ke, colors.velocity, scale, h - 8)
+        plotSeries((p) => p.pe, colors.violet, scale, h - 8)
+      }
     }
 
     let lastTs: number | null = null
+    const advance = (dt: number) => {
+      physicsStep(dt)
+      const L = lengthRef.current
+      const theta = thetaRef.current
+      const omega = omegaRef.current
+      const v = L * omega
+      const x = L * Math.sin(theta)
+      const y = L * (1 - Math.cos(theta)) // height above lowest point
+      const ke = 0.5 * massRef.current * v * v
+      const pe = massRef.current * gravityRef.current * y
+      historyRef.current.push({ t: timeRef.current, theta, x, y, ke, pe })
+      const cutoff = timeRef.current - 7
+      while (historyRef.current.length && historyRef.current[0].t < cutoff) {
+        historyRef.current.shift()
+      }
+    }
     const animate = (ts: number) => {
       if (lastTs == null) lastTs = ts
-      const dt = Math.min((ts - lastTs) / 1000, 0.033)
+      const rawDt = Math.min((ts - lastTs) / 1000, 0.033)
+      const dt = speedRef.current === 'slow' ? rawDt * 0.3 : rawDt
       lastTs = ts
 
       if (runningRef.current && !draggingRef.current) {
-        physicsStep(dt)
-        historyRef.current.push({ t: timeRef.current, theta: thetaRef.current })
-        const cutoff = timeRef.current - 7
-        while (historyRef.current.length && historyRef.current[0].t < cutoff) {
-          historyRef.current.shift()
-        }
+        advance(dt)
+      } else if (!draggingRef.current && stepRequestRef.current) {
+        stepRequestRef.current = false
+        advance(0.1)
       }
 
       drawMain()
@@ -412,15 +470,47 @@ export default function PendulumSim({ theme, onBack }: Props) {
       omegaRef.current = 0
     }
     const onPointerDown = (e: PointerEvent) => {
+      const rect = mainCanvas.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const py = e.clientY - rect.top
+
+      if (showStopwatch && hitTestStopwatchReset(stopwatchPosRef.current, px, py)) {
+        stopwatchOffsetRef.current = timeRef.current
+        return
+      }
+      if (showStopwatch && hitTestStopwatch(stopwatchPosRef.current, px, py)) {
+        draggedToolRef.current = 'stopwatch'
+        toolDragOffsetRef.current = { dx: px - stopwatchPosRef.current.x, dy: py - stopwatchPosRef.current.y }
+        return
+      }
+      if (showRuler && hitTestRuler(rulerPosRef.current, px, py)) {
+        draggedToolRef.current = 'ruler'
+        toolDragOffsetRef.current = { dx: px - rulerPosRef.current.x, dy: py - rulerPosRef.current.y }
+        return
+      }
+
       draggingRef.current = true
       updateFromPointer(e.clientX, e.clientY)
     }
     const onPointerMove = (e: PointerEvent) => {
+      const rect = mainCanvas.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const py = e.clientY - rect.top
+
+      if (draggedToolRef.current === 'stopwatch') {
+        stopwatchPosRef.current = { x: px - toolDragOffsetRef.current.dx, y: py - toolDragOffsetRef.current.dy }
+        return
+      }
+      if (draggedToolRef.current === 'ruler') {
+        rulerPosRef.current = { x: px - toolDragOffsetRef.current.dx, y: py - toolDragOffsetRef.current.dy }
+        return
+      }
       if (!draggingRef.current) return
       updateFromPointer(e.clientX, e.clientY)
     }
     const onPointerUp = () => {
       draggingRef.current = false
+      draggedToolRef.current = null
     }
     mainCanvas.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointermove', onPointerMove)
@@ -455,9 +545,31 @@ export default function PendulumSim({ theme, onBack }: Props) {
           </div>
           <div className="sim__panel sim__panel--wave">
             <div className="sim__wave-legend">
-              <span className="mono" style={{ color: 'var(--teal)' }}>
-                θ(t) — angular displacement
-              </span>
+              {graphType === 'angle' && (
+                <span className="mono" style={{ color: 'var(--teal)' }}>
+                  θ(t) — angular displacement
+                </span>
+              )}
+              {graphType === 'xy' && (
+                <>
+                  <span className="mono" style={{ color: 'var(--teal)' }}>
+                    x(t)
+                  </span>
+                  <span className="mono" style={{ color: 'var(--violet)' }}>
+                    y(t) — height above lowest point
+                  </span>
+                </>
+              )}
+              {graphType === 'energy' && (
+                <>
+                  <span className="mono" style={{ color: 'var(--teal)' }}>
+                    KE(t)
+                  </span>
+                  <span className="mono" style={{ color: 'var(--violet)' }}>
+                    PE(t)
+                  </span>
+                </>
+              )}
             </div>
             <canvas ref={waveRef} className="sim__canvas sim__canvas--wave" />
           </div>
@@ -477,6 +589,31 @@ export default function PendulumSim({ theme, onBack }: Props) {
           </div>
 
           <div className="sim__control-group">
+            <RadioGroup<GraphType>
+              legend="Graph"
+              options={[
+                { value: 'angle', label: 'Angle θ(t)' },
+                { value: 'xy', label: 'X-Y displacement' },
+                { value: 'energy', label: 'Kinetic / Potential' },
+              ]}
+              value={graphType}
+              onChange={setGraphType}
+            />
+          </div>
+
+          <div className="sim__control-group">
+            <RadioGroup<Speed>
+              legend="Speed"
+              options={[
+                { value: 'normal', label: 'Normal' },
+                { value: 'slow', label: 'Slow' },
+              ]}
+              value={speed}
+              onChange={setSpeed}
+            />
+          </div>
+
+          <div className="sim__control-group">
             <Checkbox label="Ruler" checked={showRuler} onChange={setShowRuler} />
             <Checkbox label="Stopwatch" checked={showStopwatch} onChange={setShowStopwatch} />
             <Checkbox label="Period trace" checked={showTrace} onChange={setShowTrace} />
@@ -486,6 +623,17 @@ export default function PendulumSim({ theme, onBack }: Props) {
             <button className="sim__btn sim__btn--primary" onClick={() => setRunning((r) => !r)}>
               {running ? 'Pause' : 'Play'}
             </button>
+            <button
+              className="sim__btn"
+              onClick={() => {
+                stepRequestRef.current = true
+              }}
+              disabled={running}
+            >
+              Step +0.1s
+            </button>
+          </div>
+          <div className="sim__buttons">
             <button className="sim__btn" onClick={reset}>
               Reset
             </button>
