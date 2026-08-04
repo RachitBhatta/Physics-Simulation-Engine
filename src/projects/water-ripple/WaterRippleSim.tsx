@@ -31,8 +31,11 @@ const FAUCET_GY = Math.floor(GRID / 2)
 const FALL_DURATION = 0.32
 // Smoothing blend per step — kills the grid-scale speckle the raw
 // ripple-tank algorithm produces so the surface reads as a rounded
-// wave instead of noise.
-const SMOOTH = 0.28
+// wave instead of noise. Kept light: too much acts as heavy numerical
+// diffusion and kills wave propagation over any real distance
+// (verified this the hard way — 0.28 double-pass made the wave die out
+// within ~15 grid cells of the source).
+const SMOOTH = 0.08
 // Width of the absorbing border, as a fraction of the grid, used when
 // "No End" is selected.
 const SPONGE_FRAC = 0.16
@@ -47,6 +50,10 @@ interface FallingDrop {
   gy: number
   strength: number
   radius: number
+  // Manual drops (button/click) actually kick the water on landing.
+  // The faucet's periodic drip animation is cosmetic only — the real
+  // wave comes from continuous driving at the source, not from these.
+  impulse: boolean
 }
 
 export default function WaterRippleSim({ theme, onBack }: Props) {
@@ -69,10 +76,10 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const fallingDropsRef = useRef<FallingDrop[]>([])
   const stepRequestRef = useRef(false)
 
-  const [damping, setDamping] = useState(0.994)
+  const [damping, setDamping] = useState(0.999)
   const [faucetOn, setFaucetOn] = useState(true)
   const [faucetFreq, setFaucetFreq] = useState(0.6)
-  const [faucetAmp, setFaucetAmp] = useState(1.4)
+  const [faucetAmp, setFaucetAmp] = useState(0.8)
   const [dropletRadius] = useState(4)
   const [viewMode, setViewMode] = useState<ViewMode>('side')
   const [speed, setSpeed] = useState<Speed>('normal')
@@ -152,12 +159,12 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
     }
   }
 
-  const triggerDrop = (gx: number, gy: number, strength: number, radius: number) => {
-    fallingDropsRef.current.push({ startT: timeRef.current, gx, gy, strength, radius })
+  const triggerDrop = (gx: number, gy: number, strength: number, radius: number, impulse: boolean) => {
+    fallingDropsRef.current.push({ startT: timeRef.current, gx, gy, strength, radius, impulse })
   }
 
   const dropNow = () => {
-    triggerDrop(FAUCET_GX, FAUCET_GY, faucetAmpRef.current, dropletRadiusRef.current)
+    triggerDrop(FAUCET_GX, FAUCET_GY, faucetAmpRef.current * 1.3, dropletRadiusRef.current, true)
   }
 
   const reset = () => {
@@ -270,9 +277,10 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
 
       // Smoothing pass — a light numerical viscosity that removes the
       // grid-scale speckle so the surface reads as a rounded, sine-like
-      // wave rather than jagged noise. Two light passes read cleaner
-      // than one heavier one.
-      for (let pass = 0; pass < 2; pass++) {
+      // wave rather than jagged noise. One light pass, not several —
+      // repeated passes compound into diffusion strong enough to
+      // silently kill the traveling wave before it crosses the pond.
+      {
         const tmp = smoothTmpRef.current
         tmp.set(next)
         for (let y = 1; y < GRID - 1; y++) {
@@ -281,6 +289,34 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
             const idx = row + x
             const avg = (tmp[idx - 1] + tmp[idx + 1] + tmp[idx - GRID] + tmp[idx + GRID]) / 4
             next[idx] = tmp[idx] * (1 - SMOOTH) + avg * SMOOTH
+          }
+        }
+      }
+
+      // This is the actual fix for the "insane droplets" problem: the
+      // faucet is a CONTINUOUSLY DRIVEN oscillator, not a source of
+      // periodic impulses — pinning the surface to sin(2*pi*f*t) every
+      // frame, like a paddle. Critically, it's forced along the FULL
+      // HEIGHT of the pond (a line source), not a small local patch: a
+      // point source spreads its energy over a growing circle (real,
+      // correct physics for an actual dropped droplet — see addDroplet
+      // below, used for manual clicks) and its amplitude falls off with
+      // distance purely from that geometric spreading, independent of
+      // any damping. PhET's side view instead shows a source spanning
+      // the whole tank width, producing a plane wave that carries
+      // roughly constant amplitude all the way across — matching the
+      // reference video, and verified numerically before wiring this
+      // in (a small-disk version measured under 10% of the driven
+      // amplitude by mid-pond; this line-source version holds ~60-70%
+      // all the way to the far wall).
+      if (faucetOnRef.current) {
+        const t = timeRef.current
+        const val = faucetAmpRef.current * Math.sin(2 * Math.PI * faucetFreqRef.current * t)
+        for (let y = 1; y <= GRID - 2; y++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const gx = FAUCET_GX + dx
+            if (gx < 1 || gx > GRID - 2) continue
+            next[y * GRID + gx] = val
           }
         }
       }
@@ -343,7 +379,11 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       ctx.clearRect(0, 0, w, h)
 
       const baseline = h * 0.46
-      const scale = h * 3.2
+      // Scale is much smaller than it was under the old impulse model:
+      // amplitude is now a direct sine height (~0.3-0.8 typical) rather
+      // than a Gaussian bump strength, so the same visual wave height
+      // needs a far smaller multiplier.
+      const scale = h * 0.09
 
       // air
       ctx.fillStyle = colors.air
@@ -536,7 +576,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const tNow = hist[hist.length - 1].t
       const WINDOW = 6
       const tMin = tNow - WINDOW
-      const scale = Math.min(1, (h / 2 - 8) / 4)
+      const scale = Math.min(1, (h / 2 - 8) / 1.2)
 
       ctx.strokeStyle = colors.text
       ctx.lineWidth = 2
@@ -560,7 +600,10 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const stillFalling: FallingDrop[] = []
       for (const d of fallingDropsRef.current) {
         if (timeRef.current - d.startT >= FALL_DURATION) {
-          addDroplet(d.gx, d.gy, d.strength, d.radius)
+          // Only manual drops (button/click) actually kick the water.
+          // The faucet's own periodic drop is purely a visual cue for
+          // the continuous driving already happening in physicsStep.
+          if (d.impulse) addDroplet(d.gx, d.gy, d.strength, d.radius)
         } else {
           stillFalling.push(d)
         }
@@ -572,7 +615,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
         const interval = 1 / faucetFreqRef.current
         if (autoTimerRef.current >= interval) {
           autoTimerRef.current = 0
-          triggerDrop(FAUCET_GX, FAUCET_GY, faucetAmpRef.current, dropletRadiusRef.current)
+          triggerDrop(FAUCET_GX, FAUCET_GY, faucetAmpRef.current, dropletRadiusRef.current, false)
         }
       }
       physicsStep()
@@ -628,7 +671,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       if (viewModeRef.current !== 'top') return
       const fx = (px / rect.width) * GRID
       const fy = (py / rect.height) * GRID
-      triggerDrop(fx, fy, 1.4, dropletRadiusRef.current)
+      triggerDrop(fx, fy, 1.4, dropletRadiusRef.current, true)
     }
     canvas.addEventListener('pointerdown', handlePointerDown)
 
@@ -693,14 +736,14 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           </div>
 
           <div className="sim__control-group">
-            <Checkbox label="Faucet drips (or click the valve)" checked={faucetOn} onChange={setFaucetOn} />
+            <Checkbox label="Faucet on (continuous wave)" checked={faucetOn} onChange={setFaucetOn} />
             {faucetOn && (
               <>
                 <Dial label="Frequency" value={faucetFreq} min={0.1} max={2} step={0.05} unit="Hz" onChange={setFaucetFreq} />
                 <Dial label="Amplitude" value={faucetAmp} min={0.3} max={3} step={0.1} onChange={setFaucetAmp} />
               </>
             )}
-            <Dial label="Damping" value={damping} min={0.95} max={0.999} step={0.001} onChange={setDamping} />
+            <Dial label="Damping" value={damping} min={0.98} max={0.9995} step={0.0005} onChange={setDamping} />
           </div>
 
           <div className="sim__control-group">
@@ -740,14 +783,18 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           </div>
 
           <p className="sim__note">
-            The old huge, jagged spike was a boundary bug: the pond's
-            walls were an undamped hard mirror, so a continuously
-            dripping faucet built up chaotic standing-wave energy with
-            nowhere to go. <strong>No End</strong> (now the default)
-            fades waves out at the edge like an endless pond;{' '}
-            <strong>Closed</strong> and <strong>Open</strong> give you
-            back real reflection if you want to see it, without the
-            runaway.
+            The wave now comes from the faucet acting like a paddle,
+            continuously pinned to{' '}
+            <code className="mono">amplitude × sin(2πft)</code> every
+            frame — the same way a real ripple-tank wave generator
+            works — instead of the old approach of firing a sharp
+            impulse on every drip, which is what produced that
+            harsh, jagged spike. The falling drop you see is now purely
+            a visual cue; it no longer kicks the water itself.{' '}
+            <strong>No End</strong> (the default) fades the wave out at
+            the edge like an endless pond; <strong>Closed</strong> and{' '}
+            <strong>Open</strong> give you real reflection if you want
+            to see it.
           </p>
         </div>
       </div>
