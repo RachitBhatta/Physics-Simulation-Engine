@@ -23,16 +23,23 @@ interface Colors {
 
 type ViewMode = 'top' | 'side'
 type Speed = 'normal' | 'slow'
+type EndType = 'closed' | 'open' | 'none'
 
 const GRID = 110
-const FAUCET_GX = 10
+const FAUCET_GX = 8
 const FAUCET_GY = Math.floor(GRID / 2)
 const FALL_DURATION = 0.32
-// How much each physics step blends toward its local average. This is
-// what turns the raw ripple-tank algorithm's jagged, speckly output
-// into the smooth, rounded water surface you'd actually see — without
-// it the grid update has visible grid-aligned noise baked in.
-const SMOOTH = 0.22
+// Smoothing blend per step — kills the grid-scale speckle the raw
+// ripple-tank algorithm produces so the surface reads as a rounded
+// wave instead of noise.
+const SMOOTH = 0.28
+// Width of the absorbing border, as a fraction of the grid, used when
+// "No End" is selected.
+const SPONGE_FRAC = 0.16
+// Hard safety clamp — even with everything tuned right, a numerical
+// scheme like this can in principle blow up; this guarantees the
+// worst case is a flat clip, never the runaway spike you saw.
+const MAX_HEIGHT = 6
 
 interface FallingDrop {
   startT: number
@@ -53,6 +60,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const prevRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const nextRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const smoothTmpRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
+  const spongeRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
 
   const autoTimerRef = useRef(0)
   const frameSkipRef = useRef(0)
@@ -61,13 +69,14 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const fallingDropsRef = useRef<FallingDrop[]>([])
   const stepRequestRef = useRef(false)
 
-  const [damping, setDamping] = useState(0.992)
+  const [damping, setDamping] = useState(0.994)
   const [faucetOn, setFaucetOn] = useState(true)
-  const [faucetFreq, setFaucetFreq] = useState(0.8)
-  const [faucetAmp, setFaucetAmp] = useState(2.2)
+  const [faucetFreq, setFaucetFreq] = useState(0.6)
+  const [faucetAmp, setFaucetAmp] = useState(1.4)
   const [dropletRadius] = useState(4)
-  const [viewMode, setViewMode] = useState<ViewMode>('top')
+  const [viewMode, setViewMode] = useState<ViewMode>('side')
   const [speed, setSpeed] = useState<Speed>('normal')
+  const [endType, setEndType] = useState<EndType>('none')
   const [showGraph, setShowGraph] = useState(true)
   const [showScale, setShowScale] = useState(true)
 
@@ -78,6 +87,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const dropletRadiusRef = useRef(dropletRadius)
   const viewModeRef = useRef(viewMode)
   const speedRef = useRef(speed)
+  const endTypeRef = useRef(endType)
 
   useEffect(() => {
     dampingRef.current = damping
@@ -100,6 +110,9 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   useEffect(() => {
     speedRef.current = speed
   }, [speed])
+  useEffect(() => {
+    endTypeRef.current = endType
+  }, [endType])
 
   useEffect(() => {
     const s = getComputedStyle(document.documentElement)
@@ -139,9 +152,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
     }
   }
 
-  // Route every drop (faucet, button, click) through the same falling
-  // visual so cause-and-effect actually reads: a droplet leaves the
-  // spout, falls, and THEN the ripple begins on impact.
   const triggerDrop = (gx: number, gy: number, strength: number, radius: number) => {
     fallingDropsRef.current.push({ startT: timeRef.current, gx, gy, strength, radius })
   }
@@ -192,11 +202,31 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
 
     const lightDir = normalize3(0.45, -0.55, 0.7)
 
+    // Precompute the sponge (absorbing border) profile once: 1.0 in the
+    // interior, ramping smoothly down to a strong attenuation right at
+    // the edge. This is what "No End" actually means physically — the
+    // pond behaves like a small window onto a much larger body of
+    // water, so waves that reach the edge should fade out, not bounce.
+    const sponge = spongeRef.current
+    const zone = Math.max(4, Math.floor(GRID * SPONGE_FRAC))
+    for (let y = 0; y < GRID; y++) {
+      for (let x = 0; x < GRID; x++) {
+        const distEdge = Math.min(x, y, GRID - 1 - x, GRID - 1 - y)
+        let f = 1
+        if (distEdge < zone) {
+          const t = 1 - distEdge / zone
+          f = 1 - t * t * 0.9 // smooth falloff, never fully to zero (avoids a hard seam)
+        }
+        sponge[y * GRID + x] = f
+      }
+    }
+
     const physicsStep = () => {
       const cur = curRef.current
       const prev = prevRef.current
       const next = nextRef.current
       const damp = dampingRef.current
+      const end = endTypeRef.current
 
       for (let y = 1; y < GRID - 1; y++) {
         const row = y * GRID
@@ -205,22 +235,53 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
         for (let x = 1; x < GRID - 1; x++) {
           const neighborSum =
             cur[rowUp + x] + cur[rowDown + x] + cur[row + x - 1] + cur[row + x + 1]
-          next[row + x] = (neighborSum / 2 - prev[row + x]) * damp
+          let v = (neighborSum / 2 - prev[row + x]) * damp
+          if (end === 'none') v *= sponge[row + x]
+          if (v > MAX_HEIGHT) v = MAX_HEIGHT
+          else if (v < -MAX_HEIGHT) v = -MAX_HEIGHT
+          next[row + x] = v
         }
       }
 
-      // Smoothing pass — blend each cell toward its neighborhood
-      // average. This is a light numerical viscosity that suppresses
-      // the grid-scale speckle the raw algorithm produces, without
-      // meaningfully slowing or damping the actual traveling wave.
-      const tmp = smoothTmpRef.current
-      tmp.set(next)
-      for (let y = 1; y < GRID - 1; y++) {
-        const row = y * GRID
-        for (let x = 1; x < GRID - 1; x++) {
-          const idx = row + x
-          const avg = (tmp[idx - 1] + tmp[idx + 1] + tmp[idx - GRID] + tmp[idx + GRID]) / 4
-          next[idx] = tmp[idx] * (1 - SMOOTH) + avg * SMOOTH
+      // Explicit edge handling. Previously the border cells were simply
+      // never touched, which is a hard zero (Dirichlet) boundary — a
+      // perfect, undamped mirror. Combined with a continuously driven
+      // faucet, reflections off all four walls built up into exactly
+      // the runaway spike you saw. "Closed" now does that deliberately
+      // and explicitly; "Open" and "No End" behave differently.
+      for (let x = 0; x < GRID; x++) {
+        if (end === 'closed') {
+          next[x] = 0
+          next[(GRID - 1) * GRID + x] = 0
+        } else {
+          next[x] = next[GRID + x]
+          next[(GRID - 1) * GRID + x] = next[(GRID - 2) * GRID + x]
+        }
+      }
+      for (let y = 0; y < GRID; y++) {
+        if (end === 'closed') {
+          next[y * GRID] = 0
+          next[y * GRID + GRID - 1] = 0
+        } else {
+          next[y * GRID] = next[y * GRID + 1]
+          next[y * GRID + GRID - 1] = next[y * GRID + GRID - 2]
+        }
+      }
+
+      // Smoothing pass — a light numerical viscosity that removes the
+      // grid-scale speckle so the surface reads as a rounded, sine-like
+      // wave rather than jagged noise. Two light passes read cleaner
+      // than one heavier one.
+      for (let pass = 0; pass < 2; pass++) {
+        const tmp = smoothTmpRef.current
+        tmp.set(next)
+        for (let y = 1; y < GRID - 1; y++) {
+          const row = y * GRID
+          for (let x = 1; x < GRID - 1; x++) {
+            const idx = row + x
+            const avg = (tmp[idx - 1] + tmp[idx + 1] + tmp[idx - GRID] + tmp[idx + GRID]) / 4
+            next[idx] = tmp[idx] * (1 - SMOOTH) + avg * SMOOTH
+          }
         }
       }
 
@@ -268,8 +329,8 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       main.ctx.lineWidth = 1
       main.ctx.strokeRect(0.5, 0.5, main.w - 1, main.h - 1)
 
-      drawFaucet(main.ctx, (FAUCET_GX / GRID) * main.w, (FAUCET_GY / GRID) * main.h, colors)
-      drawFallingDrops(main.ctx, main.w, main.h, colors, true)
+      drawFaucetTop(main.ctx, (FAUCET_GX / GRID) * main.w, (FAUCET_GY / GRID) * main.h, colors)
+      drawFallingDropsTop(main.ctx, main.w, main.h, colors)
 
       if (showScale) drawScaleBar(main.ctx, main.w, main.h, colors)
     }
@@ -281,12 +342,14 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const { ctx, w, h } = main
       ctx.clearRect(0, 0, w, h)
 
-      const baseline = h * 0.45
+      const baseline = h * 0.46
       const scale = h * 3.2
 
+      // air
       ctx.fillStyle = colors.air
       ctx.fillRect(0, 0, w, baseline)
 
+      // water body, following the smoothed height field
       ctx.beginPath()
       ctx.moveTo(0, baseline - cur[FAUCET_GY * GRID] * scale)
       for (let x = 0; x < GRID; x++) {
@@ -300,7 +363,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       ctx.fillStyle = `rgb(${colors.waterR}, ${colors.waterG}, ${colors.waterB})`
       ctx.fill()
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)'
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'
       ctx.lineWidth = 1.5
       ctx.beginPath()
       for (let x = 0; x < GRID; x++) {
@@ -322,55 +385,108 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       ctx.globalAlpha = 1
       ctx.strokeRect(0.5, 0.5, w - 1, h - 1)
 
-      drawFaucet(ctx, (FAUCET_GX / GRID) * w, baseline - cur[FAUCET_GY * GRID + FAUCET_GX] * scale, colors)
-      drawFallingDrops(ctx, w, h, colors, false)
+      // faucet sits ABOVE the waterline, in the air region — not
+      // straddling the surface.
+      const faucetY = baseline * 0.42
+      drawFaucetSide(ctx, (FAUCET_GX / GRID) * w, faucetY, colors)
+      drawFallingDropsSide(ctx, w, faucetY, baseline, colors)
 
       if (showScale) drawScaleBar(ctx, w, h, colors)
     }
 
-    const drawFaucet = (ctx: CanvasRenderingContext2D, px: number, py: number, colors: Colors) => {
+    // A pipe entering from the left, an elbow down to a short vertical
+    // spout, and a green circular valve at the joint — the same scene
+    // grammar as a standard faucet diagram, drawn as our own vector
+    // shapes (not a copy of any specific asset).
+    const drawFaucetPipe = (ctx: CanvasRenderingContext2D, px: number, py: number) => {
       ctx.save()
       ctx.translate(px, py)
-      ctx.strokeStyle = colors.brass
-      ctx.lineWidth = 6
+      ctx.strokeStyle = '#8a8f96'
+      ctx.lineWidth = 10
+      ctx.lineCap = 'round'
+      // horizontal supply pipe
       ctx.beginPath()
-      ctx.moveTo(-40, 0)
-      ctx.lineTo(-6, 0)
+      ctx.moveTo(-46, 0)
+      ctx.lineTo(-12, 0)
       ctx.stroke()
+      // elbow + short spout down
       ctx.beginPath()
-      ctx.arc(-6, 0, 6, 0, Math.PI * 2)
-      ctx.fillStyle = faucetOnRef.current ? '#ffd27a' : colors.brass
+      ctx.moveTo(-12, 0)
+      ctx.quadraticCurveTo(2, 0, 6, 12)
+      ctx.lineTo(6, 22)
+      ctx.stroke()
+      // pipe highlight
+      ctx.strokeStyle = '#c7ccd1'
+      ctx.lineWidth = 3
+      ctx.beginPath()
+      ctx.moveTo(-44, -3)
+      ctx.lineTo(-14, -3)
+      ctx.stroke()
+      // valve knob
+      ctx.beginPath()
+      ctx.arc(-12, 0, 8, 0, Math.PI * 2)
+      ctx.fillStyle = faucetOnRef.current ? '#4caf6a' : '#7a7f85'
       ctx.fill()
-      ctx.strokeStyle = colors.axis
-      ctx.lineWidth = 1
+      ctx.strokeStyle = '#2a2f33'
+      ctx.lineWidth = 1.5
       ctx.stroke()
       ctx.restore()
     }
 
-    // Every drop — faucet or manual — falls visually before it lands,
-    // so the cause (a bead of water leaving the spout) is clearly
-    // linked to the effect (a ripple starting where it lands).
-    const drawFallingDrops = (
+    const drawHangingDrip = (ctx: CanvasRenderingContext2D, px: number, py: number, colors: Colors) => {
+      // a small teardrop shape hanging at the spout, present whenever
+      // the faucet is on and nothing is mid-fall
+      if (!faucetOnRef.current) return
+      const bob = Math.sin(timeRef.current * 3) * 1.2
+      ctx.save()
+      ctx.translate(px, py + 8 + bob)
+      ctx.beginPath()
+      ctx.moveTo(0, -7)
+      ctx.quadraticCurveTo(5, 2, 0, 7)
+      ctx.quadraticCurveTo(-5, 2, 0, -7)
+      ctx.fillStyle = `rgb(${colors.waterR + 40}, ${colors.waterG + 40}, ${colors.waterB + 40})`
+      ctx.fill()
+      ctx.restore()
+    }
+
+    const drawFaucetSide = (ctx: CanvasRenderingContext2D, px: number, py: number, colors: Colors) => {
+      drawFaucetPipe(ctx, px, py)
+      drawHangingDrip(ctx, px + 6, py + 22, colors)
+    }
+
+    const drawFaucetTop = (ctx: CanvasRenderingContext2D, px: number, py: number, colors: Colors) => {
+      drawFaucetPipe(ctx, px, py)
+      drawHangingDrip(ctx, px + 6, py + 22, colors)
+    }
+
+    const drawFallingDropsSide = (
       ctx: CanvasRenderingContext2D,
       w: number,
-      h: number,
+      spoutY: number,
+      baseline: number,
       colors: Colors,
-      top: boolean,
     ) => {
       for (const d of fallingDropsRef.current) {
         const progress = Math.min(1, (timeRef.current - d.startT) / FALL_DURATION)
-        const eased = progress * progress // ease-in, like gravity
-        let px: number, py: number
-        if (top) {
-          px = (d.gx / GRID) * w
-          const startY = (d.gy / GRID) * h - 26
-          const endY = (d.gy / GRID) * h
-          py = startY + (endY - startY) * eased
-        } else {
-          px = (d.gx / GRID) * w
-          const baseline = h * 0.45
-          py = baseline - 26 + eased * 26
-        }
+        const eased = progress * progress
+        const px = (d.gx / GRID) * w
+        const startY = spoutY + 30
+        const py = startY + (baseline - startY) * eased
+        ctx.beginPath()
+        ctx.ellipse(px, py, 3, 4.5, 0, 0, Math.PI * 2)
+        ctx.fillStyle = `rgb(${colors.waterR + 40}, ${colors.waterG + 40}, ${colors.waterB + 40})`
+        ctx.fill()
+      }
+    }
+
+    const drawFallingDropsTop = (ctx: CanvasRenderingContext2D, w: number, h: number, colors: Colors) => {
+      for (const d of fallingDropsRef.current) {
+        const progress = Math.min(1, (timeRef.current - d.startT) / FALL_DURATION)
+        const eased = progress * progress
+        const px = (d.gx / GRID) * w
+        const startY = (d.gy / GRID) * h - 30
+        const endY = (d.gy / GRID) * h
+        const py = startY + (endY - startY) * eased
         ctx.beginPath()
         ctx.arc(px, py, 3.5, 0, Math.PI * 2)
         ctx.fillStyle = `rgb(${colors.waterR + 40}, ${colors.waterG + 40}, ${colors.waterB + 40})`
@@ -420,7 +536,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const tNow = hist[hist.length - 1].t
       const WINDOW = 6
       const tMin = tNow - WINDOW
-      const scale = Math.min(1, (h / 2 - 8) / 6)
+      const scale = Math.min(1, (h / 2 - 8) / 4)
 
       ctx.strokeStyle = colors.text
       ctx.lineWidth = 2
@@ -441,7 +557,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
     }
 
     const advance = (dt: number) => {
-      // Resolve any drops that have finished falling this tick.
       const stillFalling: FallingDrop[] = []
       for (const d of fallingDropsRef.current) {
         if (timeRef.current - d.startT >= FALL_DURATION) {
@@ -502,11 +617,9 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       const px = e.clientX - rect.left
       const py = e.clientY - rect.top
 
-      // Faucet valve: roughly the last 44px on the left edge, near the
-      // faucet's vertical position (top view) or the pipe row (side).
       const faucetScreenY =
-        viewModeRef.current === 'top' ? (FAUCET_GY / GRID) * rect.height : rect.height * 0.45
-      const nearFaucet = px < 46 && Math.abs(py - faucetScreenY) < 26
+        viewModeRef.current === 'top' ? (FAUCET_GY / GRID) * rect.height : rect.height * 0.46 * 0.42
+      const nearFaucet = px < 56 && Math.abs(py - faucetScreenY) < 26
       if (nearFaucet) {
         setFaucetOn((on) => !on)
         return
@@ -515,7 +628,7 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       if (viewModeRef.current !== 'top') return
       const fx = (px / rect.width) * GRID
       const fy = (py / rect.height) * GRID
-      triggerDrop(fx, fy, 2.2, dropletRadiusRef.current)
+      triggerDrop(fx, fy, 1.4, dropletRadiusRef.current)
     }
     canvas.addEventListener('pointerdown', handlePointerDown)
 
@@ -567,11 +680,24 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           </div>
 
           <div className="sim__control-group">
+            <RadioGroup<EndType>
+              legend="Pond edges"
+              options={[
+                { value: 'closed', label: 'Closed (walls)' },
+                { value: 'open', label: 'Open (reflect)' },
+                { value: 'none', label: 'No End' },
+              ]}
+              value={endType}
+              onChange={setEndType}
+            />
+          </div>
+
+          <div className="sim__control-group">
             <Checkbox label="Faucet drips (or click the valve)" checked={faucetOn} onChange={setFaucetOn} />
             {faucetOn && (
               <>
-                <Dial label="Frequency" value={faucetFreq} min={0.1} max={3} step={0.05} unit="Hz" onChange={setFaucetFreq} />
-                <Dial label="Amplitude" value={faucetAmp} min={0.5} max={5} step={0.1} onChange={setFaucetAmp} />
+                <Dial label="Frequency" value={faucetFreq} min={0.1} max={2} step={0.05} unit="Hz" onChange={setFaucetFreq} />
+                <Dial label="Amplitude" value={faucetAmp} min={0.3} max={3} step={0.1} onChange={setFaucetAmp} />
               </>
             )}
             <Dial label="Damping" value={damping} min={0.95} max={0.999} step={0.001} onChange={setDamping} />
@@ -614,12 +740,14 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           </div>
 
           <p className="sim__note">
-            "Drop now" and the faucet both release a visible bead that
-            falls before it lands — the ripple starts on impact, not
-            the instant you click. Click the faucet valve to turn the
-            drip on or off. The wave field now runs through a light
-            smoothing pass each step, which is why the surface reads as
-            a clean rolling wave instead of jagged noise.
+            The old huge, jagged spike was a boundary bug: the pond's
+            walls were an undamped hard mirror, so a continuously
+            dripping faucet built up chaotic standing-wave energy with
+            nowhere to go. <strong>No End</strong> (now the default)
+            fades waves out at the edge like an endless pond;{' '}
+            <strong>Closed</strong> and <strong>Open</strong> give you
+            back real reflection if you want to see it, without the
+            runaway.
           </p>
         </div>
       </div>
