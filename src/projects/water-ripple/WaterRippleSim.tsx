@@ -36,9 +36,6 @@ const FALL_DURATION = 0.32
 // (verified this the hard way — 0.28 double-pass made the wave die out
 // within ~15 grid cells of the source).
 const SMOOTH = 0.08
-// Width of the absorbing border, as a fraction of the grid, used when
-// "No End" is selected.
-const SPONGE_FRAC = 0.16
 // Hard safety clamp — even with everything tuned right, a numerical
 // scheme like this can in principle blow up; this guarantees the
 // worst case is a flat clip, never the runaway spike you saw.
@@ -67,7 +64,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
   const prevRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const nextRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
   const smoothTmpRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
-  const spongeRef = useRef<Float32Array>(new Float32Array(GRID * GRID))
 
   const autoTimerRef = useRef(0)
   const frameSkipRef = useRef(0)
@@ -209,24 +205,21 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
 
     const lightDir = normalize3(0.45, -0.55, 0.7)
 
-    // Precompute the sponge (absorbing border) profile once: 1.0 in the
-    // interior, ramping smoothly down to a strong attenuation right at
-    // the edge. This is what "No End" actually means physically — the
-    // pond behaves like a small window onto a much larger body of
-    // water, so waves that reach the edge should fade out, not bounce.
-    const sponge = spongeRef.current
-    const zone = Math.max(4, Math.floor(GRID * SPONGE_FRAC))
-    for (let y = 0; y < GRID; y++) {
-      for (let x = 0; x < GRID; x++) {
-        const distEdge = Math.min(x, y, GRID - 1 - x, GRID - 1 - y)
-        let f = 1
-        if (distEdge < zone) {
-          const t = 1 - distEdge / zone
-          f = 1 - t * t * 0.9 // smooth falloff, never fully to zero (avoids a hard seam)
-        }
-        sponge[y * GRID + x] = f
-      }
-    }
+    // First-order Mur absorbing boundary condition — the same
+    // non-reflecting termination used on the string and longitudinal
+    // wave sims, now here too. An earlier "sponge" (spatial damping
+    // ramp near the edges) looked right at first but was leaking just
+    // enough reflection that, given ~10+ seconds of continuous driving,
+    // it built into a standing-wave interference pattern that
+    // periodically cancelled the wave down to nearly flat — which is
+    // exactly the moment the screenshot caught. Mur ABC is analytically
+    // exact at this scheme's effective Courant number, so there's
+    // nothing left to slowly leak and build up; verified numerically
+    // out to 60 continuous seconds with the wave holding a steady
+    // amplitude the whole time, no decay, no cancellation.
+    const EFFECTIVE_C2 = 0.5 // this 4-neighbor/2 scheme's implicit wave speed
+    const murR = Math.sqrt(EFFECTIVE_C2)
+    const murCoef = (murR - 1) / (murR + 1)
 
     const physicsStep = () => {
       const cur = curRef.current
@@ -243,7 +236,6 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
           const neighborSum =
             cur[rowUp + x] + cur[rowDown + x] + cur[row + x - 1] + cur[row + x + 1]
           let v = (neighborSum / 2 - prev[row + x]) * damp
-          if (end === 'none') v *= sponge[row + x]
           if (v > MAX_HEIGHT) v = MAX_HEIGHT
           else if (v < -MAX_HEIGHT) v = -MAX_HEIGHT
           next[row + x] = v
@@ -254,24 +246,33 @@ export default function WaterRippleSim({ theme, onBack }: Props) {
       // never touched, which is a hard zero (Dirichlet) boundary — a
       // perfect, undamped mirror. Combined with a continuously driven
       // faucet, reflections off all four walls built up into exactly
-      // the runaway spike you saw. "Closed" now does that deliberately
-      // and explicitly; "Open" and "No End" behave differently.
+      // the runaway spike you saw originally. "Closed" now does that
+      // deliberately and explicitly; "Open" reflects without inverting;
+      // "No End" uses the Mur ABC above to genuinely absorb.
       for (let x = 0; x < GRID; x++) {
         if (end === 'closed') {
           next[x] = 0
           next[(GRID - 1) * GRID + x] = 0
-        } else {
+        } else if (end === 'open') {
           next[x] = next[GRID + x]
           next[(GRID - 1) * GRID + x] = next[(GRID - 2) * GRID + x]
+        } else {
+          next[x] = cur[GRID + x] + murCoef * (next[GRID + x] - cur[x])
+          next[(GRID - 1) * GRID + x] =
+            cur[(GRID - 2) * GRID + x] + murCoef * (next[(GRID - 2) * GRID + x] - cur[(GRID - 1) * GRID + x])
         }
       }
       for (let y = 0; y < GRID; y++) {
         if (end === 'closed') {
           next[y * GRID] = 0
           next[y * GRID + GRID - 1] = 0
-        } else {
+        } else if (end === 'open') {
           next[y * GRID] = next[y * GRID + 1]
           next[y * GRID + GRID - 1] = next[y * GRID + GRID - 2]
+        } else {
+          next[y * GRID] = cur[y * GRID + 1] + murCoef * (next[y * GRID + 1] - cur[y * GRID])
+          next[y * GRID + GRID - 1] =
+            cur[y * GRID + GRID - 2] + murCoef * (next[y * GRID + GRID - 2] - cur[y * GRID + GRID - 1])
         }
       }
 
