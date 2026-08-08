@@ -63,5 +63,25 @@ export const projects: ProjectMeta[] = [
     tags: ['Oscillations', 'SHM'],
     status: 'ready',
   },
+  {
+    id: 'standing-waves',
+    number: '06',
+    title: 'Standing Waves',
+    subtitle: 'Nodes, antinodes, and strain',
+    description:
+      'Pick a harmonic and watch two equal waves traveling in opposite directions sum into a standing wave — nodes that never move, antinodes that swing hardest, and a live strain graph showing where the string is actually under the most stress.',
+    tags: ['Waves', 'Resonance'],
+    status: 'ready',
+  },
+  {
+    id: 'wave-superposition',
+    number: '07',
+    title: 'Superposition of Waves',
+    subtitle: 'Build two waves, watch them combine',
+    description:
+      'Configure two waves — shape, amplitude, wavelength, frequency, phase — and watch their live sum. Match them for clean constructive or destructive interference, or detune the frequency slightly to hear beats in the probe graph.',
+    tags: ['Waves', 'Interference'],
+    status: 'ready',
+  },
 ]
 

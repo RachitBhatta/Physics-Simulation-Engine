@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Dial from '../../components/Dial'
 import Switch from '../../components/Switch'
+import RadioGroup from '../../components/RadioGroup'
 import type { Theme } from '../../lib/useTheme'
 import './CircularMotionSim.css'
 
@@ -8,6 +9,8 @@ interface Props {
   theme: Theme
   onBack: () => void
 }
+
+type ComponentMode = 'both' | 'x' | 'y'
 
 interface Colors {
   axis: string
@@ -43,6 +46,7 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
   const [showVelocity, setShowVelocity] = useState(true)
   const [showAccel, setShowAccel] = useState(false)
   const [showTrail, setShowTrail] = useState(true)
+  const [componentMode, setComponentMode] = useState<ComponentMode>('both')
 
   const amplitudeRef = useRef(amplitude)
   const omegaRef = useRef(omega)
@@ -50,6 +54,7 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
   const showVelocityRef = useRef(showVelocity)
   const showAccelRef = useRef(showAccel)
   const showTrailRef = useRef(showTrail)
+  const componentModeRef = useRef(componentMode)
 
   useEffect(() => {
     amplitudeRef.current = amplitude
@@ -69,6 +74,9 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
   useEffect(() => {
     showTrailRef.current = showTrail
   }, [showTrail])
+  useEffect(() => {
+    componentModeRef.current = componentMode
+  }, [componentMode])
 
   // Re-read theme colors from CSS variables whenever the theme changes
   useEffect(() => {
@@ -170,30 +178,42 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
       const projY = cy
       const projYx = cx
       const projYy = cy - py
+      const mode = componentModeRef.current
+      const showX = mode === 'both' || mode === 'x'
+      const showY = mode === 'both' || mode === 'y'
 
       // dashed guide: particle -> x projection
-      ctx.setLineDash([4, 4])
-      ctx.strokeStyle = colors.x
-      ctx.globalAlpha = 0.6
-      ctx.beginPath()
-      ctx.moveTo(particleX, particleY)
-      ctx.lineTo(projX, projY)
-      ctx.stroke()
+      if (showX) {
+        ctx.setLineDash([4, 4])
+        ctx.strokeStyle = colors.x
+        ctx.globalAlpha = 0.6
+        ctx.beginPath()
+        ctx.moveTo(particleX, particleY)
+        ctx.lineTo(projX, projY)
+        ctx.stroke()
+      }
 
       // dashed guide: particle -> y projection
-      ctx.strokeStyle = colors.y
-      ctx.beginPath()
-      ctx.moveTo(particleX, particleY)
-      ctx.lineTo(projYx, projYy)
-      ctx.stroke()
+      if (showY) {
+        ctx.setLineDash([4, 4])
+        ctx.strokeStyle = colors.y
+        ctx.globalAlpha = 0.6
+        ctx.beginPath()
+        ctx.moveTo(particleX, particleY)
+        ctx.lineTo(projYx, projYy)
+        ctx.stroke()
+      }
 
-      // connecting line between the two projections
-      ctx.strokeStyle = colors.guide
-      ctx.globalAlpha = 0.5
-      ctx.beginPath()
-      ctx.moveTo(projX, projY)
-      ctx.lineTo(projYx, projYy)
-      ctx.stroke()
+      // connecting line between the two projections (only meaningful
+      // when both are visible)
+      if (showX && showY) {
+        ctx.strokeStyle = colors.guide
+        ctx.globalAlpha = 0.5
+        ctx.beginPath()
+        ctx.moveTo(projX, projY)
+        ctx.lineTo(projYx, projYy)
+        ctx.stroke()
+      }
       ctx.setLineDash([])
       ctx.globalAlpha = 1
 
@@ -226,16 +246,20 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
       }
 
       // x projection dot
-      ctx.beginPath()
-      ctx.arc(projX, projY, 5, 0, Math.PI * 2)
-      ctx.fillStyle = colors.x
-      ctx.fill()
+      if (showX) {
+        ctx.beginPath()
+        ctx.arc(projX, projY, 5, 0, Math.PI * 2)
+        ctx.fillStyle = colors.x
+        ctx.fill()
+      }
 
       // y projection dot
-      ctx.beginPath()
-      ctx.arc(projYx, projYy, 5, 0, Math.PI * 2)
-      ctx.fillStyle = colors.y
-      ctx.fill()
+      if (showY) {
+        ctx.beginPath()
+        ctx.arc(projYx, projYy, 5, 0, Math.PI * 2)
+        ctx.fillStyle = colors.y
+        ctx.fill()
+      }
 
       // particle
       ctx.beginPath()
@@ -287,8 +311,9 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
         ctx.stroke()
       }
 
-      plot('x', colors.x)
-      plot('y', colors.y)
+      const mode = componentModeRef.current
+      if (mode === 'both' || mode === 'x') plot('x', colors.x)
+      if (mode === 'both' || mode === 'y') plot('y', colors.y)
     }
 
     const animate = (ts: number) => {
@@ -345,18 +370,35 @@ export default function CircularMotionSim({ theme, onBack }: Props) {
           </div>
           <div className="sim__panel sim__panel--wave">
             <div className="sim__wave-legend">
-              <span className="mono" style={{ color: 'var(--teal)' }}>
-                x(t) — horizontal shadow
-              </span>
-              <span className="mono" style={{ color: 'var(--rust)' }}>
-                y(t) — vertical shadow
-              </span>
+              {(componentMode === 'both' || componentMode === 'x') && (
+                <span className="mono" style={{ color: 'var(--teal)' }}>
+                  x(t) — horizontal shadow
+                </span>
+              )}
+              {(componentMode === 'both' || componentMode === 'y') && (
+                <span className="mono" style={{ color: 'var(--rust)' }}>
+                  y(t) — vertical shadow
+                </span>
+              )}
             </div>
             <canvas ref={waveRef} className="sim__canvas sim__canvas--wave" />
           </div>
         </div>
 
         <div className="sim__controls">
+          <div className="sim__control-group">
+            <RadioGroup<ComponentMode>
+              legend="Show component"
+              options={[
+                { value: 'both', label: 'Both (X and Y)' },
+                { value: 'x', label: 'X only' },
+                { value: 'y', label: 'Y only' },
+              ]}
+              value={componentMode}
+              onChange={setComponentMode}
+            />
+          </div>
+
           <div className="sim__control-group">
             <Dial
               label="Amplitude"

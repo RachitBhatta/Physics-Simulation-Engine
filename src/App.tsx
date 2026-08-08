@@ -5,6 +5,8 @@ import WaterRippleSim from './projects/water-ripple/WaterRippleSim'
 import StringWaveSim from './projects/string-wave/StringWaveSim'
 import LongitudinalWaveSim from './projects/longitudinal-wave/LongitudinalWaveSim'
 import PendulumSim from './projects/simple-pendulum/PendulumSim'
+import StandingWaveSim from './projects/standing-waves/StandingWaveSim'
+import WaveSuperpositionSim from './projects/wave-superposition/WaveSuperpositionSim'
 import { useTheme } from './lib/useTheme'
 
 type Route = { name: 'home' } | { name: 'project'; id: string }
@@ -28,6 +30,12 @@ export default function App() {
   }
   if (route.name === 'project' && route.id === 'simple-pendulum') {
     return <PendulumSim theme={theme} onBack={onBack} />
+  }
+  if (route.name === 'project' && route.id === 'standing-waves') {
+    return <StandingWaveSim theme={theme} onBack={onBack} />
+  }
+  if (route.name === 'project' && route.id === 'wave-superposition') {
+    return <WaveSuperpositionSim theme={theme} onBack={onBack} />
   }
 
   return (
